@@ -6,8 +6,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.os.Build
 import android.content.pm.ServiceInfo
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.provider.Settings
 import android.content.res.Configuration
 import android.graphics.Color
@@ -62,6 +64,7 @@ class FloatingWorkspaceService : Service() {
     private var runningJob: Job? = null
     private var screenCaptureResultCode: Int? = null
     private var screenCaptureData: Intent? = null
+    private var mediaProjection: MediaProjection? = null
 
     private companion object {
         const val FOREGROUND_NOTIFICATION_ID = 1001
@@ -69,7 +72,6 @@ class FloatingWorkspaceService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForegroundServiceNotification()
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return
@@ -99,6 +101,7 @@ class FloatingWorkspaceService : Service() {
             @Suppress("DEPRECATION")
             intent?.getParcelableExtra(EXTRA_RESULT_DATA)
         }
+        startForegroundServiceNotification()
         return START_NOT_STICKY
     }
 
@@ -122,18 +125,38 @@ class FloatingWorkspaceService : Service() {
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                FOREGROUND_NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
+        val hasProjection =
+            screenCaptureResultCode != null && screenCaptureData != null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            if (hasProjection) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            }
+            startForeground(FOREGROUND_NOTIFICATION_ID, notification, type)
         } else {
             startForeground(FOREGROUND_NOTIFICATION_ID, notification)
+        }
+
+        if (hasProjection) {
+            acquireMediaProjection()
+        }
+    }
+
+    private fun acquireMediaProjection() {
+        val code = screenCaptureResultCode ?: return
+        val data = screenCaptureData ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        mediaProjection = try {
+            manager.getMediaProjection(code, data)
+        } catch (e: Exception) {
+            null
         }
     }
 
     override fun onDestroy() {
+        mediaProjection?.stop()
+        mediaProjection = null
         runningJob?.cancel()
         scriptScope.cancel()
         dismissPage()
