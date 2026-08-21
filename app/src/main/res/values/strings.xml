@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">自动化小精灵</string>
+    <string name="accessibility_service_description">自动化小精灵无障碍服务</string>
+</resources>
