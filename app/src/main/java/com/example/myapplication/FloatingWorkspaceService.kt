@@ -94,7 +94,6 @@ class FloatingWorkspaceService : Service() {
             accessibilityControllerProvider = { AutomationAccessibilityService.controller },
             applicationControllerProvider = { applicationController },
             visionControllerProvider = ::visionControllerOrNull,
-            initialVariablesProvider = { scriptWorkspaceCoordinator.initialVariables },
             handlerResolver = ActionRegistry::handlerFor
         )
     )

@@ -28,11 +28,18 @@ class ScriptRunner(
     private val handlerResolver: (ActionType) -> ScriptActionHandler? = { null }
 ) {
     suspend fun run(actions: List<ScriptAction>): ActionExecutionResult {
+        return run(actions, initialVariablesProvider())
+    }
+
+    suspend fun run(
+        actions: List<ScriptAction>,
+        initialVariables: Map<String, String>
+    ): ActionExecutionResult {
         val runtime = ScriptRuntime(
             accessibilityController = accessibilityControllerProvider(),
             applicationController = applicationControllerProvider(),
             visionController = visionControllerProvider(),
-            initialVariables = initialVariablesProvider()
+            initialVariables = initialVariables
         )
         return runActions(actions, runtime)
     }

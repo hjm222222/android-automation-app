@@ -93,4 +93,7 @@ class ScriptWorkspaceController(
     }
 
     suspend fun run(): ActionExecutionResult = scriptRunner.run(snapshot())
+
+    suspend fun run(snapshot: ScriptExecutionSnapshot): ActionExecutionResult =
+        scriptRunner.run(snapshot.actions, snapshot.initialVariables)
 }

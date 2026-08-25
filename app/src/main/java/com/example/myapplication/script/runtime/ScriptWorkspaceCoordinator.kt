@@ -11,14 +11,19 @@ class ScriptWorkspaceCoordinator(
     private val repository: ScriptRepositoryStore,
     private val workspace: ScriptWorkspaceController
 ) {
-    var currentScriptId: String? = null
-        private set
+    private val sessionLock = Any()
+    private var currentId: String? = null
+    private var currentName: String? = null
+    private var currentInitialVariables: Map<String, String> = emptyMap()
 
-    var currentScriptName: String? = null
-        private set
+    val currentScriptId: String?
+        get() = synchronized(sessionLock) { currentId }
 
-    var initialVariables: Map<String, String> = emptyMap()
-        private set
+    val currentScriptName: String?
+        get() = synchronized(sessionLock) { currentName }
+
+    val initialVariables: Map<String, String>
+        get() = synchronized(sessionLock) { currentInitialVariables }
 
     val isEmpty: Boolean
         get() = workspace.isEmpty
@@ -29,32 +34,37 @@ class ScriptWorkspaceCoordinator(
 
     fun load(id: String): SavedScript? {
         val script = repository.load(id) ?: return null
-        currentScriptId = script.id
-        currentScriptName = script.name
-        initialVariables = script.initialVariables
         workspace.replaceAll(script.actions)
+        synchronized(sessionLock) {
+            currentId = script.id
+            currentName = script.name
+            currentInitialVariables = script.initialVariables.toMap()
+        }
         return script
     }
 
     fun save(name: String): SavedScript {
         val normalizedName = name.trim()
         require(normalizedName.isNotBlank()) { "脚本名称不能为空" }
+        val snapshot = executionSnapshot()
         val saved = repository.save(
             SavedScript(
-                id = currentScriptId ?: UUID.randomUUID().toString(),
+                id = snapshot.scriptId ?: UUID.randomUUID().toString(),
                 name = normalizedName,
-                actions = workspace.snapshot(),
-                initialVariables = initialVariables
+                actions = snapshot.actions,
+                initialVariables = snapshot.initialVariables
             )
         )
-        currentScriptId = saved.id
-        currentScriptName = saved.name
+        synchronized(sessionLock) {
+            currentId = saved.id
+            currentName = saved.name
+        }
         return saved
     }
 
     fun delete(id: String): Boolean {
         val deleted = repository.delete(id)
-        if (currentScriptId == id) {
+        if (deleted && currentScriptId == id) {
             clearCurrentScript()
         }
         return deleted
@@ -62,12 +72,32 @@ class ScriptWorkspaceCoordinator(
 
     fun replaceActions(actions: List<ScriptAction>) = workspace.replaceAll(actions)
 
-    suspend fun run(): ActionExecutionResult = workspace.run()
+    fun setInitialVariables(values: Map<String, String>) {
+        synchronized(sessionLock) {
+            currentInitialVariables = values.toMap()
+        }
+    }
+
+    fun executionSnapshot(): ScriptExecutionSnapshot {
+        val actions = workspace.snapshot()
+        return synchronized(sessionLock) {
+            ScriptExecutionSnapshot(
+                scriptId = currentId,
+                scriptName = currentName,
+                actions = actions,
+                initialVariables = currentInitialVariables.toMap()
+            )
+        }
+    }
+
+    suspend fun run(): ActionExecutionResult = workspace.run(executionSnapshot())
 
     private fun clearCurrentScript() {
-        currentScriptId = null
-        currentScriptName = null
-        initialVariables = emptyMap()
+        synchronized(sessionLock) {
+            currentId = null
+            currentName = null
+            currentInitialVariables = emptyMap()
+        }
         workspace.replaceAll(emptyList())
     }
 }
