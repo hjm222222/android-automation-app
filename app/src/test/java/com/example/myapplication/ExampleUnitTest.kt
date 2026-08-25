@@ -70,7 +70,7 @@ class ExampleUnitTest {
 
         viewModel.refreshPermissionState(PermissionState(true, true, true))
         advanceUntilIdle()
-        viewModel.refreshPermissionState(PermissionState(false, true, true))
+        viewModel.refreshPermissionState(PermissionState(false, true))
 
         assertEquals(
             WorkspaceStatus.NEEDS_PERMISSION,

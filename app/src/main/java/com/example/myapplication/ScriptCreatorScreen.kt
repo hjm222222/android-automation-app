@@ -31,19 +31,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private enum class CreationMode {
-    MANUAL,
-    RECORD
-}
-
 @Composable
 fun ScriptCreatorScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var scriptName by rememberSaveable { mutableStateOf("") }
-    var selectedMode by rememberSaveable { mutableStateOf(CreationMode.MANUAL) }
-
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -102,28 +95,7 @@ fun ScriptCreatorScreen(
         )
 
         Spacer(modifier = Modifier.height(26.dp))
-        Text(
-            text = "制作方式",
-            fontWeight = FontWeight.Bold,
-            color = Color(0xFF345247)
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-
-        CreationModeOption(
-            title = "手动添加步骤",
-            description = "逐步设计小任务的执行流程",
-            selected = selectedMode == CreationMode.MANUAL,
-            onClick = { selectedMode = CreationMode.MANUAL }
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        CreationModeOption(
-            title = "录制操作",
-            description = "功能准备中，后续支持录制操作步骤",
-            selected = selectedMode == CreationMode.RECORD,
-            onClick = { selectedMode = CreationMode.RECORD }
-        )
-
-        Spacer(modifier = Modifier.height(26.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = "步骤",
             fontWeight = FontWeight.Bold,
@@ -177,39 +149,4 @@ fun ScriptCreatorScreen(
     }
 }
 
-@Composable
-private fun CreationModeOption(
-    title: String,
-    description: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        color = if (selected) Color(0xFFFFE08A) else Color.White,
-        shape = RoundedCornerShape(18.dp),
-        tonalElevation = if (selected) 2.dp else 0.dp,
-        shadowElevation = if (selected) 2.dp else 0.dp
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = if (selected) "●" else "○",
-                color = if (selected) Color(0xFF876A1D) else Color(0xFFA99B7E),
-                fontSize = 22.sp
-            )
-            Column(modifier = Modifier.padding(start = 12.dp)) {
-                Text(text = title, fontWeight = FontWeight.Bold, color = Color(0xFF345247))
-                Text(
-                    text = description,
-                    modifier = Modifier.padding(top = 3.dp),
-                    color = Color(0xFF759087),
-                    fontSize = 13.sp
-                )
-            }
-        }
-    }
-}
+

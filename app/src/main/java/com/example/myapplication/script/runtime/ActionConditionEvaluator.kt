@@ -25,7 +25,10 @@ object ActionConditionEvaluator {
                     VariableComparisonOperator.LESS_THAN_OR_EQUALS -> actual <= expected
                 }
             }
-            is JudgementCondition.OcrText,
+            is JudgementCondition.OcrText -> {
+                val actual = runtime.lastOcrText ?: return false
+                actual.contains(condition.expectedText)
+            }
             is JudgementCondition.Image,
             is JudgementCondition.RegionColor -> false
         }

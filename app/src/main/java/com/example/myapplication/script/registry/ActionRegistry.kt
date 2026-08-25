@@ -7,12 +7,10 @@ import com.example.myapplication.script.action.ClickNodeActionHandler
 import com.example.myapplication.script.action.CreateVariableActionHandler
 import com.example.myapplication.script.action.DoubleClickActionHandler
 import com.example.myapplication.script.action.FindColorActionHandler
-import com.example.myapplication.script.action.FindNodeActionHandler
 import com.example.myapplication.script.action.InputTextActionHandler
 import com.example.myapplication.script.action.LongClickActionHandler
 import com.example.myapplication.script.action.OcrTextActionHandler
 import com.example.myapplication.script.action.PickColorActionHandler
-import com.example.myapplication.script.action.ReadNodeTextActionHandler
 import com.example.myapplication.script.action.ScriptActionHandler
 import com.example.myapplication.script.action.SetVariableActionHandler
 import com.example.myapplication.script.action.SwipeActionHandler
@@ -22,6 +20,16 @@ import com.example.myapplication.script.action.WaitImageActionHandler
 import com.example.myapplication.script.model.ActionCategory
 import com.example.myapplication.script.model.ActionType
 
+/**
+ * 动作类型到执行器的集中注册表。
+ *
+ * 新增动作时，通常只需要完成三步：
+ * 1. 在 ActionType 增加类型；
+ * 2. 创建对应的 ScriptActionHandler；
+ * 3. 在这里注册 Handler。
+ *
+ * 页面不直接 new Handler，执行器也不反向依赖页面，这就是动作功能可扩展的边界。
+ */
 object ActionRegistry {
     private val handlers = mapOf<ActionType, ScriptActionHandler>(
         ActionType.CLICK to ClickActionHandler(),
@@ -31,8 +39,6 @@ object ActionRegistry {
         ActionType.INPUT_TEXT to InputTextActionHandler(),
         ActionType.WAIT to WaitActionHandler(),
         ActionType.CLICK_NODE to ClickNodeActionHandler(),
-        ActionType.FIND_NODE to FindNodeActionHandler(),
-        ActionType.READ_NODE_TEXT to ReadNodeTextActionHandler(),
         ActionType.CLICK_IMAGE to ClickImageActionHandler(),
         ActionType.WAIT_IMAGE to WaitImageActionHandler(),
         ActionType.OCR_TEXT to OcrTextActionHandler(),
@@ -44,10 +50,14 @@ object ActionRegistry {
         ActionType.APP_CONTROL to AppControlActionHandler()
     )
 
-    fun categories(): List<ActionCategory> = ActionCategory.entries
+    /** 只显示至少包含一个可用动作的分类，避免动作选择器出现空分组。 */
+    fun categories(): List<ActionCategory> = ActionCategory.entries.filter { category ->
+        actionsIn(category).isNotEmpty()
+    }
 
+    /** 只向 UI 暴露已经具备可执行能力的动作，避免客户创建无法运行的脚本。 */
     fun actionsIn(category: ActionCategory): List<ActionType> =
-        ActionType.entries.filter { it.category == category }
+        ActionType.entries.filter { it.category == category && handlers[it]?.isAvailable == true }
 
     fun handlerFor(type: ActionType): ScriptActionHandler? = handlers[type]
 }

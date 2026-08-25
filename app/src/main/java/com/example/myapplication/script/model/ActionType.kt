@@ -8,8 +8,6 @@ enum class ActionType(val displayName: String, val category: ActionCategory) {
     INPUT_TEXT("输入文字", ActionCategory.BASIC),
     WAIT("等待", ActionCategory.BASIC),
     CLICK_NODE("点击控件", ActionCategory.ACCESSIBILITY),
-    FIND_NODE("查找控件", ActionCategory.ACCESSIBILITY),
-    READ_NODE_TEXT("控件文本", ActionCategory.ACCESSIBILITY),
     CLICK_IMAGE("点击图像", ActionCategory.VISION),
     WAIT_IMAGE("等待图像", ActionCategory.VISION),
     OCR_TEXT("OCR文字", ActionCategory.VISION),

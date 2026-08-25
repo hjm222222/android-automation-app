@@ -14,11 +14,11 @@ import kotlinx.coroutines.launch
 
 data class PermissionUiState(
     val overlayGranted: Boolean = false,
-    val screenCaptureGranted: Boolean = false,
-    val accessibilityGranted: Boolean = false
+    val accessibilityGranted: Boolean = false,
+    val screenCaptureGranted: Boolean = false
 ) {
     val allGranted: Boolean
-        get() = overlayGranted && screenCaptureGranted && accessibilityGranted
+        get() = overlayGranted && accessibilityGranted && screenCaptureGranted
 }
 
 enum class WorkspaceStatus {
@@ -54,8 +54,8 @@ class MainViewModel(
     fun refreshPermissionState(permissionState: PermissionState) {
         val permissions = PermissionUiState(
             overlayGranted = permissionState.overlayGranted,
-            screenCaptureGranted = permissionState.screenCaptureGranted,
-            accessibilityGranted = permissionState.accessibilityGranted
+            accessibilityGranted = permissionState.accessibilityGranted,
+            screenCaptureGranted = permissionState.screenCaptureGranted
         )
 
         _uiState.update { current ->
@@ -75,16 +75,6 @@ class MainViewModel(
             workspacePreparationJob?.cancel()
             workspacePreparationJob = null
         }
-    }
-
-    fun onScreenCaptureResult(granted: Boolean) {
-        refreshPermissionState(
-            PermissionState(
-                overlayGranted = _uiState.value.permissions.overlayGranted,
-                screenCaptureGranted = granted,
-                accessibilityGranted = _uiState.value.permissions.accessibilityGranted
-            )
-        )
     }
 
     fun onAddClicked() {

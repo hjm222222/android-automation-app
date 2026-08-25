@@ -129,8 +129,8 @@ fun HomeScreen(
             MainContent(
                 state = state,
                 onRequestOverlay = onRequestOverlay,
-                onRequestScreenCapture = onRequestScreenCapture,
                 onRequestAccessibility = onRequestAccessibility,
+                onRequestScreenCapture = onRequestScreenCapture,
                 permissionShakeTrigger = permissionShakeTrigger
             )
         }
@@ -317,8 +317,8 @@ private fun PermissionCard(
     state: MainUiState,
     permissionShakeTrigger: Int,
     onRequestOverlay: () -> Unit,
-    onRequestScreenCapture: () -> Unit,
     onRequestAccessibility: () -> Unit,
+    onRequestScreenCapture: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var shakeOffset by remember { mutableFloatStateOf(0f) }
@@ -360,18 +360,18 @@ private fun PermissionCard(
                 onClick = onRequestOverlay
             )
             PermissionRow(
-                icon = "▣",
-                title = "录屏",
-                description = "记录屏幕上的操作",
-                granted = state.permissions.screenCaptureGranted,
-                onClick = onRequestScreenCapture
-            )
-            PermissionRow(
                 icon = "✦",
                 title = "无障碍",
                 description = "帮助小精灵完成自动化",
                 granted = state.permissions.accessibilityGranted,
                 onClick = onRequestAccessibility
+            )
+            PermissionRow(
+                icon = "▣",
+                title = "屏幕录制",
+                description = "支持截图、找图和文字识别",
+                granted = state.permissions.screenCaptureGranted,
+                onClick = onRequestScreenCapture
             )
         }
     }
@@ -440,8 +440,9 @@ private fun HomeScreenPreview() {
             state = MainUiState(workspaceStatus = WorkspaceStatus.READY),
             onAddClick = {},
             onRequestOverlay = {},
-            onRequestScreenCapture = {},
             onRequestAccessibility = {},
+            onRequestScreenCapture = {},
+            permissionShakeTrigger = 0,
             modifier = Modifier
         )
     }
