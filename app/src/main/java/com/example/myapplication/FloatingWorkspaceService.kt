@@ -70,6 +70,7 @@ import com.example.myapplication.script.platform.AndroidApplicationController
 import com.example.myapplication.script.platform.AccessibilityNodePickerOverlay
 import com.example.myapplication.script.ui.ActionSettingsCoordinator
 import com.example.myapplication.script.ui.ActionEditorCoordinator
+import com.example.myapplication.script.ui.ActionWorkspaceCoordinator
 import com.example.myapplication.script.ui.WorkspaceCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -104,6 +105,7 @@ class FloatingWorkspaceService : Service() {
         )
     }
     private val scriptActionApi: ScriptActionApi by lazy { ScriptActionApiImpl(scriptWorkspace) }
+    private val actionWorkspaceCoordinator by lazy { ActionWorkspaceCoordinator(scriptActionApi) }
     private val actionEditorCoordinator by lazy {
         ActionEditorCoordinator(
             showSwipeEditor = ::showSwipeActionEditor,
@@ -122,14 +124,15 @@ class FloatingWorkspaceService : Service() {
     private val workspaceCoordinator by lazy {
         WorkspaceCoordinator(
             context = this,
-            scriptActionApi = scriptActionApi,
+            actionWorkspaceCoordinator = actionWorkspaceCoordinator,
             dp = ::dp,
             roundedBackground = ::roundedBackground,
             showPage = { view, width, height, focusable, followWorkspace ->
                 showPage(view, width, height, focusable, followWorkspace)
             },
             addCloseButton = ::addCloseButton,
-            onPageClosed = ::dismissPage
+            onPageClosed = ::dismissPage,
+            onEditAction = ::showExistingActionEditor
         )
     }
     private val actionSettingsCoordinator by lazy {
@@ -871,15 +874,24 @@ class FloatingWorkspaceService : Service() {
         showOverlayDialog(dialog)
     }
 
-    private fun showActionEditor(type: ActionType, initialValues: Map<String, String> = emptyMap()) {
+    private fun showExistingActionEditor(action: ScriptAction) {
+        dismissPage()
+        showActionEditor(action.type, action.parameters, action)
+    }
+
+    private fun showActionEditor(
+        type: ActionType,
+        initialValues: Map<String, String> = emptyMap(),
+        existingAction: ScriptAction? = null
+    ) {
         val definition = ActionEditorRegistry.definitionFor(type) ?: return
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), 0)
         }
-        var executionOptions = ActionExecutionOptions()
-        var beforeActions: List<ScriptAction> = emptyList()
-        var afterActions: List<ScriptAction> = emptyList()
+        var executionOptions = existingAction?.executionOptions ?: ActionExecutionOptions()
+        var beforeActions: List<ScriptAction> = existingAction?.beforeActions ?: emptyList()
+        var afterActions: List<ScriptAction> = existingAction?.afterActions ?: emptyList()
         val settingsButton = TextView(this).apply {
             text = "设置"
             textSize = 12f
@@ -913,7 +925,14 @@ class FloatingWorkspaceService : Service() {
                     ActionInputType.TEXT -> android.text.InputType.TYPE_CLASS_TEXT
                     ActionInputType.NUMBER -> android.text.InputType.TYPE_CLASS_NUMBER
                 }
-                setText(initialValues[fieldDefinition.key] ?: fieldDefinition.defaultValue)
+                val storedValue = initialValues[fieldDefinition.key]
+                setText(
+                    if (type == ActionType.WAIT && fieldDefinition.key == ActionParameterKey.DURATION_MILLIS) {
+                        storedValue?.toLongOrNull()?.div(1000L)?.toString() ?: fieldDefinition.defaultValue
+                    } else {
+                        storedValue ?: fieldDefinition.defaultValue
+                    }
+                )
                 setTextColor(Color.rgb(72, 62, 47))
                 setHintTextColor(Color.rgb(153, 136, 104))
                 setPadding(dp(12), 0, dp(12), 0)
@@ -925,20 +944,22 @@ class FloatingWorkspaceService : Service() {
             })
         }
         val dialog = AlertDialog.Builder(this)
-            .setTitle(type.displayName)
+            .setTitle(if (existingAction == null) type.displayName else "编辑${type.displayName}")
             .setView(body)
             .setNegativeButton("取消", null)
-            .setPositiveButton("添加") { _, _ ->
+            .setPositiveButton(if (existingAction == null) "添加" else "保存") { _, _ ->
                 val editorValues = initialValues + fields.mapValues { (_, field) -> field.text.toString() }
-                when (val apiResult = scriptActionApi.addAction(
-                    type = type,
-                    fields = editorValues,
-                    settings = ActionSettings(
-                        executionOptions = executionOptions,
-                        beforeActions = beforeActions,
-                        afterActions = afterActions
-                    )
-                )) {
+                val settings = ActionSettings(
+                    executionOptions = executionOptions,
+                    beforeActions = beforeActions,
+                    afterActions = afterActions
+                )
+                val apiResult = if (existingAction == null) {
+                    scriptActionApi.addAction(type, editorValues, settings)
+                } else {
+                    actionWorkspaceCoordinator.replace(existingAction.id, type, editorValues, settings)
+                }
+                when (apiResult) {
                     is com.example.myapplication.script.api.ActionApiResult.Success -> dismissPage()
                     is com.example.myapplication.script.api.ActionApiResult.Failure -> {
                         Toast.makeText(this, apiResult.message, Toast.LENGTH_SHORT).show()

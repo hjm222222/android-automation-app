@@ -16,6 +16,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import com.example.myapplication.script.model.ActionExecutionOptions
+import com.example.myapplication.script.model.ActionCondition
 import com.example.myapplication.script.model.ActionSettings
 import com.example.myapplication.script.model.ActionSettingsInput
 import com.example.myapplication.script.model.ActionSettingsMapper
@@ -49,37 +50,37 @@ class ActionSettingsCoordinator(
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(8))
         }
-        var selectedBeforeActions = currentBeforeActions
-        var selectedAfterActions = currentAfterActions
-        lateinit var beforeActionButton: TextView
-        beforeActionButton = settingChoiceButton(
-            currentBeforeActions.firstOrNull()?.let { "运行前：${it.displayName}" } ?: "选择运行前动作"
-        ) {
+        val selectedBeforeActions = currentBeforeActions.toMutableList()
+        val selectedAfterActions = currentAfterActions.toMutableList()
+        val beforeActionsContainer = createActionListContainer(selectedBeforeActions)
+        val beforeActionButton = settingChoiceButton("添加运行前动作") {
             showNestedActionPicker("选择运行前动作") { action ->
-                selectedBeforeActions = listOf(action)
-                beforeActionButton.text = "运行前：${action.displayName}"
+                selectedBeforeActions += action
+                refreshActionList(beforeActionsContainer, selectedBeforeActions)
             }
         }
         content.addView(settingSectionTitle("动作运行前"))
         content.addView(beforeActionButton, LinearLayout.LayoutParams(-1, dp(44)).apply { bottomMargin = dp(12) })
+        content.addView(beforeActionsContainer, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
 
-        lateinit var afterActionButton: TextView
-        afterActionButton = settingChoiceButton(
-            currentAfterActions.firstOrNull()?.let { "运行后：${it.displayName}" } ?: "选择运行后动作"
-        ) {
+        val afterActionsContainer = createActionListContainer(selectedAfterActions)
+        val afterActionButton = settingChoiceButton("添加运行后动作") {
             showNestedActionPicker("选择运行后动作") { action ->
-                selectedAfterActions = listOf(action)
-                afterActionButton.text = "运行后：${action.displayName}"
+                selectedAfterActions += action
+                refreshActionList(afterActionsContainer, selectedAfterActions)
             }
         }
         content.addView(settingSectionTitle("动作运行后"))
         content.addView(afterActionButton, LinearLayout.LayoutParams(-1, dp(44)).apply { bottomMargin = dp(12) })
+        content.addView(afterActionsContainer, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
 
         content.addView(settingSectionTitle("判断条件"))
-        val variableName = createDialogInput("变量名", "")
-        val variableExpectedValue = createDialogInput("比较值", "")
+        val variableCondition = currentOptions.condition.toVariableCondition()
+        val variableName = createDialogInput("变量名", variableCondition?.variableName.orEmpty())
+        val variableExpectedValue = createDialogInput("比较值", variableCondition?.expectedValue.orEmpty())
         val variableOperator = Spinner(context).apply {
             adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, arrayOf("==", "<="))
+            setSelection(if (variableCondition?.operator == VariableComparisonOperator.LESS_THAN_OR_EQUALS) 1 else 0)
         }
         val variableJudgement = createVariableJudgement(variableName, variableOperator, variableExpectedValue)
         content.addView(createExpandableJudgement("变量判断", variableJudgement.view, variableJudgement.onExpand), LinearLayout.LayoutParams(-1, -2))
@@ -98,8 +99,8 @@ class ActionSettingsCoordinator(
                         VariableComparisonOperator.LESS_THAN_OR_EQUALS
                     },
                     variableExpectedValue = variableExpectedValue.text.toString(),
-                    beforeActions = selectedBeforeActions,
-                    afterActions = selectedAfterActions
+                    beforeActions = selectedBeforeActions.toList(),
+                    afterActions = selectedAfterActions.toList()
                 )
                 when (val result = ActionSettingsMapper.map(input, currentOptions)) {
                     is ActionSettingsMappingResult.Success -> onSettingsSelected(result.settings)
@@ -108,6 +109,36 @@ class ActionSettingsCoordinator(
             }
             .create()
         showDialog(dialog, dp(340))
+    }
+
+    private fun createActionListContainer(actions: MutableList<ScriptAction>): LinearLayout =
+        LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            refreshActionList(this, actions)
+        }
+
+    private fun refreshActionList(container: LinearLayout, actions: MutableList<ScriptAction>) {
+        container.removeAllViews()
+        actions.forEachIndexed { index, action ->
+            val row = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
+            row.addView(TextView(context).apply {
+                text = "${index + 1}. ${action.displayName}"
+                textSize = 12f
+                setTextColor(Color.rgb(106, 89, 64))
+            }, LinearLayout.LayoutParams(0, dp(32), 1f))
+            row.addView(TextView(context).apply {
+                text = "移除"
+                textSize = 12f
+                setTextColor(Color.rgb(156, 83, 64))
+                gravity = Gravity.CENTER
+                isClickable = true
+                setOnClickListener {
+                    actions.removeAt(index)
+                    refreshActionList(container, actions)
+                }
+            }, LinearLayout.LayoutParams(dp(48), dp(32)))
+            container.addView(row)
+        }
     }
 
     private fun createExpandableJudgement(title: String, detail: View, onExpand: (() -> Unit)? = null): LinearLayout {
@@ -166,6 +197,24 @@ class ActionSettingsCoordinator(
     }
 
     private data class JudgementContent(val view: View, val onExpand: () -> Unit)
+
+    private data class VariableConditionValues(
+        val variableName: String,
+        val operator: VariableComparisonOperator,
+        val expectedValue: String
+    )
+
+    private fun ActionCondition.toVariableCondition(): VariableConditionValues? = when (this) {
+        is ActionCondition.VariableEquals -> VariableConditionValues(
+            variableName,
+            VariableComparisonOperator.EQUALS,
+            expectedValue
+        )
+        is ActionCondition.Judgement -> (condition as? JudgementCondition.Variable)?.let {
+            VariableConditionValues(it.variableName, it.operator, it.expectedValue)
+        }
+        ActionCondition.Always -> null
+    }
 
     private fun createOcrJudgement(): View = createJudgementView(arrayOf("区域内判断", "全屏判断"), "目标文字")
 

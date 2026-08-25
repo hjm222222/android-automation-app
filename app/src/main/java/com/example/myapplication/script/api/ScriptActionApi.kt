@@ -3,6 +3,7 @@ package com.example.myapplication.script.api
 import com.example.myapplication.script.model.ActionExecutionOptions
 import com.example.myapplication.script.model.ActionSettings
 import com.example.myapplication.script.model.ActionType
+import com.example.myapplication.script.model.ScriptAction
 
 /**
  * 面向 UI、规则解析器和未来 AI 的脚本动作接口。
@@ -44,6 +45,18 @@ interface ScriptActionApi {
     fun remove(actionId: String): ActionApiResult
 
     fun removeAt(index: Int): ActionApiResult
+
+    fun action(actionId: String): ScriptAction?
+
+    fun replaceAction(
+        actionId: String,
+        type: ActionType,
+        fields: Map<String, String>,
+        settings: ActionSettings,
+        displayName: String? = null
+    ): ActionApiResult
+
+    fun move(actionId: String, targetPosition: Int): ActionApiResult
 
     fun replaceWait(
         actionId: String,

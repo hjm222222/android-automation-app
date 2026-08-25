@@ -222,6 +222,57 @@ class ScriptRunnerTest {
     }
 
     @Test
+    fun actionApiReplacesActionWhilePreservingIdAndSettings() {
+        val api = ScriptActionApiImpl(ScriptWorkspaceController())
+        val original = api.addAction(
+            type = ActionType.CREATE_VARIABLE,
+            fields = mapOf(
+                ActionParameterKey.VARIABLE_NAME to "count",
+                ActionParameterKey.VARIABLE_VALUE to "1"
+            )
+        ) as ActionApiResult.Success
+        val actionId = original.actionId ?: error("缺少动作 ID")
+        val settings = com.example.myapplication.script.model.ActionSettings(
+            executionOptions = ActionExecutionOptions(
+                ActionCondition.Judgement(
+                    JudgementCondition.Variable("count", VariableComparisonOperator.EQUALS, "1")
+                )
+            ),
+            beforeActions = listOf(ScriptAction(ActionType.WAIT, id = "before")),
+            afterActions = listOf(ScriptAction(ActionType.WAIT, id = "after"))
+        )
+
+        val result = api.replaceAction(
+            actionId = actionId,
+            type = ActionType.SET_VARIABLE,
+            fields = mapOf(
+                ActionParameterKey.VARIABLE_NAME to "count",
+                ActionParameterKey.VARIABLE_VALUE to "2"
+            ),
+            settings = settings
+        )
+
+        assertTrue(result is ActionApiResult.Success)
+        val updated = api.action(actionId) ?: error("动作未找到")
+        assertEquals(actionId, updated.id)
+        assertEquals(ActionType.SET_VARIABLE, updated.type)
+        assertEquals("2", updated.parameters[ActionParameterKey.VARIABLE_VALUE])
+        assertEquals(settings.executionOptions, updated.executionOptions)
+        assertEquals(settings.beforeActions, updated.beforeActions)
+        assertEquals(settings.afterActions, updated.afterActions)
+    }
+
+    @Test
+    fun actionApiMovesActionByStableId() {
+        val api = ScriptActionApiImpl(ScriptWorkspaceController())
+        val first = (api.addWait(1) as ActionApiResult.Success).actionId ?: error("缺少动作 ID")
+        val second = (api.addWait(2) as ActionApiResult.Success).actionId ?: error("缺少动作 ID")
+
+        assertTrue(api.move(second, 0) is ActionApiResult.Success)
+        assertEquals(listOf(second, first), api.listActions().map { it.id })
+    }
+
+    @Test
     fun actionApiMapsInvalidNumberPrecisely() {
         val api = ScriptActionApiImpl(ScriptWorkspaceController())
 

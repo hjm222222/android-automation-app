@@ -87,15 +87,44 @@ class ScriptActionApiImpl(
         if (seconds < 0) {
             return failure(FailureCode.INVALID_PARAMETER, "等待时间不能小于 0 秒")
         }
-        val current = workspace.snapshot().firstOrNull { it.id == actionId }
+        val current = action(actionId)
             ?: return failure(FailureCode.ACTION_NOT_FOUND, "未找到要修改的动作")
-        val created = ActionFactory.create(
+        return replaceAction(
+            actionId = actionId,
             type = ActionType.WAIT,
-            editorValues = mapOf(ActionParameterKey.DURATION_MILLIS to seconds.toString()),
+            fields = mapOf(ActionParameterKey.DURATION_MILLIS to seconds.toString()),
             settings = currentSettings(current)
         )
-        val action = created.actionOrFailure() ?: return created.toApiFailure()
-        return apply(WorkspaceActionCommand.Replace(actionId, action))
+    }
+
+    override fun action(actionId: String): ScriptAction? = workspace.snapshot()
+        .firstOrNull { it.id == actionId }
+
+    override fun replaceAction(
+        actionId: String,
+        type: ActionType,
+        fields: Map<String, String>,
+        settings: ActionSettings,
+        displayName: String?
+    ): ActionApiResult {
+        if (actionId.isBlank()) {
+            return failure(FailureCode.INVALID_PARAMETER, "动作 ID 不能为空")
+        }
+        if (action(actionId) == null) {
+            return failure(FailureCode.ACTION_NOT_FOUND, "未找到要修改的动作")
+        }
+        val created = ActionFactory.create(type, fields, settings)
+        val replacement = created.actionOrFailure()?.let { action ->
+            displayName?.let { action.copy(displayName = it) } ?: action
+        } ?: return created.toApiFailure()
+        return apply(WorkspaceActionCommand.Replace(actionId, replacement))
+    }
+
+    override fun move(actionId: String, targetPosition: Int): ActionApiResult {
+        if (actionId.isBlank()) {
+            return failure(FailureCode.INVALID_PARAMETER, "动作 ID 不能为空")
+        }
+        return apply(WorkspaceActionCommand.Move(actionId, targetPosition))
     }
 
     override fun listActions(): List<ActionSummary> = workspace.snapshot().map { action ->
