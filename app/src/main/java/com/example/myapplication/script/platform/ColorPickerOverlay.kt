@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.drawable.GradientDrawable
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -39,9 +40,15 @@ class ColorPickerOverlay(
         android.graphics.PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
-    fun show() {
-        if (shown) return
-        shown = true
+    fun show(): Boolean {
+        if (shown) {
+            Log.w(TAG, "Color picker cannot be shown because it is already visible")
+            return false
+        }
+        if (screenshot.isRecycled) {
+            Log.w(TAG, "Color picker cannot be shown because the screenshot was recycled")
+            return false
+        }
         root.addView(pickerView, FrameLayout.LayoutParams(-1, -1))
         root.addView(label, FrameLayout.LayoutParams(-2, -2).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -57,8 +64,15 @@ class ColorPickerOverlay(
         }
         root.addView(actions, FrameLayout.LayoutParams(-1, -1))
         pickerView.onColorChanged = ::updateLabel
-        windowManager.addView(root, params)
-        root.post { pickerView.setPosition(root.width / 2f, root.height / 2f) }
+        return try {
+            windowManager.addView(root, params)
+            shown = true
+            root.post { pickerView.setPosition(root.width / 2f, root.height / 2f) }
+            true
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Failed to add color picker overlay", error)
+            false
+        }
     }
 
     private fun button(textValue: String, description: String, action: () -> Unit) = Button(root.context).apply {
@@ -88,13 +102,19 @@ class ColorPickerOverlay(
     private fun confirm() {
         val color = pickerView.currentColor
         val hex = color.toHex()
+        Log.d(TAG, "event=color_picker_confirm x=${pickerView.bitmapX} y=${pickerView.bitmapY} hex=$hex")
         dismiss()
         onConfirmed(pickerView.bitmapX, pickerView.bitmapY, hex, Color.red(color), Color.green(color), Color.blue(color))
     }
 
     private fun cancel() {
+        Log.d(TAG, "event=color_picker_cancel")
         dismiss()
         onCancelled()
+    }
+
+    private companion object {
+        const val TAG = "ColorPickerOverlay"
     }
 
     private class PickerView(context: Context, private val bitmap: Bitmap) : View(context) {

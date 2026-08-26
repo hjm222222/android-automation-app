@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.drawable.GradientDrawable
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -111,6 +112,10 @@ class SwipeCoordinatePickerOverlay(
     private fun cancel() {
         dismiss()
         onCancelled()
+    }
+
+    private companion object {
+        const val TAG = "SwipeCoordinatePickerOverlay"
     }
 
     private class SwipeGestureView(context: Context) : View(context) {

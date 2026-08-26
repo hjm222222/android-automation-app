@@ -13,6 +13,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,6 +35,8 @@ class ScreenCaptureSession(
             (appContext.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager)
                 .getMediaProjection(resultCode, Intent(resultData))
         } else null
+    }.onFailure { error ->
+        Log.e(TAG, "Failed to create MediaProjection", error)
     }.getOrNull()
     private val width = appContext.resources.displayMetrics.widthPixels.coerceAtLeast(1)
     private val height = appContext.resources.displayMetrics.heightPixels.coerceAtLeast(1)
@@ -47,7 +50,9 @@ class ScreenCaptureSession(
 
     init {
         projection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() { valid = false }
+            override fun onStop() {
+                close()
+            }
         }, handler)
         if (valid) {
             display = runCatching {
@@ -57,12 +62,18 @@ class ScreenCaptureSession(
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     reader?.surface, null, handler
                 )
+            }.onFailure { error ->
+                Log.e(TAG, "Failed to create screen capture virtual display", error)
             }.getOrNull()
-            if (display == null) valid = false
+            if (display == null) {
+                Log.e(TAG, "Screen capture virtual display is unavailable")
+                valid = false
+            }
         }
     }
 
     suspend fun captureBitmap(): Bitmap? = mutex.withLock {
+        Log.d(TAG, "event=screen_capture_request valid=$valid closed=$closed width=$width height=$height")
         if (!valid || closed) return@withLock null
         withContext(Dispatchers.IO) {
             kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
@@ -71,20 +82,44 @@ class ScreenCaptureSession(
                 fun finish(bitmap: Bitmap?) {
                     if (finished) return
                     finished = true
+                    Log.d(TAG, "event=screen_capture_result success=${bitmap != null} width=${bitmap?.width ?: 0} height=${bitmap?.height ?: 0}")
                     localReader.setOnImageAvailableListener(null, null)
                     if (continuation.isActive) continuation.resumeSafely(bitmap)
                 }
-                localReader.setOnImageAvailableListener({ imageReader ->
-                    val image = runCatching { imageReader.acquireLatestImage() }.getOrNull()
-                    if (image == null) return@setOnImageAvailableListener
+                fun captureAvailableImage(imageReader: ImageReader): Boolean {
+                    val image = runCatching { imageReader.acquireLatestImage() }
+                        .onFailure { error -> Log.e(TAG, "Failed to acquire screen capture image", error) }
+                        .getOrNull()
+                        ?: return false
                     try {
                         val plane = image.planes.firstOrNull()
                         val buffer = plane?.buffer
-                        if (!valid || plane == null || buffer == null) finish(null)
-                        else finish(imageToBitmap(buffer, plane.pixelStride, plane.rowStride, image.width, image.height))
-                    } catch (_: RuntimeException) { finish(null) } finally { image.close() }
-                }, handler)
-                handler.postDelayed({ finish(null) }, 2000L)
+                        if (!valid || plane == null || buffer == null) {
+                            Log.w(TAG, "Screen capture image has no readable pixel buffer")
+                            finish(null)
+                        } else {
+                            finish(imageToBitmap(buffer, plane.pixelStride, plane.rowStride, image.width, image.height))
+                        }
+                    } catch (error: RuntimeException) {
+                        Log.e(TAG, "Failed to convert screen capture image to bitmap", error)
+                        finish(null)
+                    } finally {
+                        image.close()
+                    }
+                    return true
+                }
+                handler.post {
+                    if (finished || captureAvailableImage(localReader)) return@post
+                    localReader.setOnImageAvailableListener({ imageReader ->
+                        captureAvailableImage(imageReader)
+                    }, handler)
+                }
+                handler.postDelayed({
+                    if (!finished) {
+                        Log.w(TAG, "Screen capture timed out after $CAPTURE_TIMEOUT_MILLIS ms")
+                        finish(null)
+                    }
+                }, CAPTURE_TIMEOUT_MILLIS)
                 continuation.invokeOnCancellation { handler.post { localReader.setOnImageAvailableListener(null, null) } }
             }
         }
@@ -99,6 +134,11 @@ class ScreenCaptureSession(
         runCatching { projection?.stop() }
         runCatching { reader?.close() }
         thread.quitSafely()
+    }
+
+    private companion object {
+        const val TAG = "ScreenCaptureSession"
+        const val CAPTURE_TIMEOUT_MILLIS = 2_000L
     }
 
     private fun imageToBitmap(buffer: ByteBuffer, pixelStride: Int, rowStride: Int, imageWidth: Int, imageHeight: Int): Bitmap {

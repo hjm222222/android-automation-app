@@ -1,5 +1,6 @@
 package com.example.myapplication.script.ui
 
+import android.util.Log
 import com.example.myapplication.script.model.ActionType
 
 /**
@@ -22,6 +23,7 @@ class ActionEditorCoordinator(
     private val showDefaultAction: (ActionType) -> Unit
 ) {
     fun open(type: ActionType) {
+        Log.d(TAG, "event=action_editor_route actionType=$type")
         when (type) {
             ActionType.SWIPE -> showSwipeEditor()
             ActionType.CLICK,
@@ -42,5 +44,9 @@ class ActionEditorCoordinator(
             ActionType.APP_CONTROL -> showAppControlEditor()
             else -> showDefaultAction(type)
         }
+    }
+
+    private companion object {
+        const val TAG = "ActionEditorCoordinator"
     }
 }

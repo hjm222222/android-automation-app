@@ -94,14 +94,23 @@ class ImageTemplateMatcher {
 
         val maxX = right - template.width
         val maxY = bottom - template.height
-        val step = kotlin.math.ceil(
+        val sampleStep = kotlin.math.ceil(
             kotlin.math.sqrt((template.width.toLong() * template.height).toDouble() / maxSamples)
         ).toInt().coerceAtLeast(1)
+        val samplesPerPosition = ((template.width + sampleStep - 1) / sampleStep) *
+            ((template.height + sampleStep - 1) / sampleStep)
+        val candidateCount = (maxX - left + 1).toLong() * (maxY - top + 1).toLong()
+        val candidateBudget = (2_000_000 / samplesPerPosition).coerceIn(1, 50_000)
+        val positionStep = kotlin.math.ceil(
+            kotlin.math.sqrt(candidateCount.toDouble() / candidateBudget)
+        ).toInt().coerceAtLeast(1)
         var best: Match? = null
-        for (y in top..maxY) {
+        var checked = 0
+        for (y in top..maxY step positionStep) {
             coroutineContext.ensureActive()
-            for (x in left..maxX) {
-                val score = score(capture, template, x, y, step)
+            for (x in left..maxX step positionStep) {
+                if (++checked % 256 == 0) coroutineContext.ensureActive()
+                val score = score(capture, template, x, y, sampleStep)
                 if (score >= threshold && (best == null || score > best.score)) best = Match(x, y, score)
             }
         }

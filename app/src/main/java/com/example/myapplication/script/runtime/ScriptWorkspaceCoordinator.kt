@@ -54,7 +54,7 @@ class ScriptWorkspaceCoordinator(
 
     fun delete(id: String): Boolean {
         val deleted = repository.delete(id)
-        if (currentScriptId == id) {
+        if (deleted && currentScriptId == id) {
             clearCurrentScript()
         }
         return deleted

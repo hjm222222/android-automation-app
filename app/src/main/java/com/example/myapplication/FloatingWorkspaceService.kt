@@ -164,6 +164,18 @@ class FloatingWorkspaceService : Service() {
         const val EXTRA_SCREEN_CAPTURE_DATA = "screenCaptureData"
         const val EXTRA_SCRIPT_ID = "scriptId"
         private const val FOREGROUND_NOTIFICATION_ID = 1001
+        private const val TAG = "FloatingWorkspaceService"
+        private val VISUAL_ACTION_TYPES = setOf(
+            ActionType.CLICK,
+            ActionType.LONG_CLICK,
+            ActionType.DOUBLE_CLICK,
+            ActionType.SWIPE,
+            ActionType.CLICK_IMAGE,
+            ActionType.WAIT_IMAGE,
+            ActionType.OCR_TEXT,
+            ActionType.FIND_COLOR,
+            ActionType.PICK_COLOR
+        )
     }
 
     override fun onCreate() {
@@ -459,8 +471,11 @@ class FloatingWorkspaceService : Service() {
                 setOnClickListener {
                     AlertDialog.Builder(this@FloatingWorkspaceService).setTitle("删除脚本").setMessage(saved.name)
                         .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
-                            scriptWorkspaceCoordinator.delete(saved.id)
-                            showSettingsPage()
+                            if (scriptWorkspaceCoordinator.delete(saved.id)) {
+                                showSettingsPage()
+                            } else {
+                                Toast.makeText(this@FloatingWorkspaceService, "删除脚本失败", Toast.LENGTH_SHORT).show()
+                            }
                         }.create().also(::showOverlayDialog)
                 }
             }
@@ -548,7 +563,12 @@ class FloatingWorkspaceService : Service() {
                         contentDescription = actionType.displayName
                         isClickable = true
                         isFocusable = true
-                        setOnClickListener { addAction(actionType) }
+                        setOnClickListener {
+                            if (actionType in VISUAL_ACTION_TYPES) {
+                                android.util.Log.d(TAG, "event=visual_action_button_click actionType=$actionType")
+                            }
+                            addAction(actionType)
+                        }
                     }
                     row.addView(button, LinearLayout.LayoutParams(0, dp(28), 1f).apply {
                         setMargins(dp(3), dp(3), dp(3), dp(3))
@@ -688,6 +708,7 @@ class FloatingWorkspaceService : Service() {
                 return@launch
             }
             if (bitmap == null) {
+                android.util.Log.w(TAG, "OCR screenshot capture failed: sessionValid=${screenCaptureSession?.isValid}")
                 Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
                 return@launch
             }
@@ -696,6 +717,7 @@ class FloatingWorkspaceService : Service() {
                 windowManager = windowManager,
                 screenshot = bitmap,
                 onConfirmed = { selection ->
+                    android.util.Log.d(TAG, "event=ocr_region_selected left=${selection.left} top=${selection.top} right=${selection.right} bottom=${selection.bottom}")
                     imageTemplatePicker = null
                     if (!bitmap.isRecycled) bitmap.recycle()
                     if (isDestroyed) return@ImageTemplatePickerOverlay
@@ -718,6 +740,7 @@ class FloatingWorkspaceService : Service() {
                 imageTemplatePicker = picker
             } else {
                 if (!bitmap.isRecycled) bitmap.recycle()
+                android.util.Log.e(TAG, "Failed to show OCR selection overlay")
                 Toast.makeText(this@FloatingWorkspaceService, "无法显示 OCR 框选窗口", Toast.LENGTH_SHORT).show()
             }
         }
@@ -738,6 +761,7 @@ class FloatingWorkspaceService : Service() {
                 return@launch
             }
             if (bitmap == null) {
+                android.util.Log.w(TAG, "Template screenshot capture failed: sessionValid=${screenCaptureSession?.isValid}")
                 Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
                 return@launch
             }
@@ -763,6 +787,7 @@ class FloatingWorkspaceService : Service() {
                 imageTemplatePicker = picker
             } else {
                 if (!bitmap.isRecycled) bitmap.recycle()
+                android.util.Log.e(TAG, "Failed to show template selection overlay")
                 Toast.makeText(this@FloatingWorkspaceService, "无法显示模板框选窗口", Toast.LENGTH_SHORT).show()
             }
         }
@@ -779,14 +804,16 @@ class FloatingWorkspaceService : Service() {
         scriptScope.launch {
             val bitmap = screenCaptureSession?.captureBitmap()
             if (bitmap == null) {
+                android.util.Log.w(TAG, "Color picker screenshot capture failed: sessionValid=${screenCaptureSession?.isValid}")
                 Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            colorPicker = ColorPickerOverlay(
+            val picker = ColorPickerOverlay(
                 context = this@FloatingWorkspaceService,
                 windowManager = windowManager,
                 screenshot = bitmap,
                 onConfirmed = { x, y, hex, red, green, blue ->
+                    android.util.Log.d(TAG, "event=color_picker_result x=$x y=$y hex=$hex")
                     colorPicker = null
                     if (isDestroyed) return@ColorPickerOverlay
                     when (val result = scriptActionApi.addAction(
@@ -809,7 +836,14 @@ class FloatingWorkspaceService : Service() {
                     }
                 },
                 onCancelled = { colorPicker = null }
-            ).also { it.show() }
+            )
+            if (picker.show()) {
+                colorPicker = picker
+            } else {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                android.util.Log.e(TAG, "Failed to show color picker overlay")
+                Toast.makeText(this@FloatingWorkspaceService, "无法显示取色窗口，请检查悬浮窗权限", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 

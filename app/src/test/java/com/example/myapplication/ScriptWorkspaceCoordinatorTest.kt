@@ -59,7 +59,26 @@ class ScriptWorkspaceCoordinatorTest {
         assertNull(repository.load(saved.id))
     }
 
+    @Test
+    fun failedDeletionKeepsCurrentScriptAndWorkspace() {
+        val repository = InMemoryScriptRepository()
+        val workspace = ScriptWorkspaceController()
+        val coordinator = ScriptWorkspaceCoordinator(repository, workspace)
+        val saved = coordinator.save("保留脚本")
+        val action = ScriptAction(ActionType.WAIT, id = "wait-1")
+        workspace.add(action)
+        repository.failDeletion = true
+
+        assertTrue(!coordinator.delete(saved.id))
+
+        assertEquals(saved.id, coordinator.currentScriptId)
+        assertEquals("保留脚本", coordinator.currentScriptName)
+        assertEquals(listOf(action), coordinator.snapshot())
+        assertEquals(saved, repository.load(saved.id))
+    }
+
     private class InMemoryScriptRepository : ScriptRepositoryStore {
+        var failDeletion = false
         private val scripts = linkedMapOf<String, SavedScript>()
 
         override fun list(): List<SavedScript> = scripts.values.toList()
@@ -71,6 +90,6 @@ class ScriptWorkspaceCoordinatorTest {
             return script
         }
 
-        override fun delete(id: String): Boolean = scripts.remove(id) != null
+        override fun delete(id: String): Boolean = !failDeletion && scripts.remove(id) != null
     }
 }

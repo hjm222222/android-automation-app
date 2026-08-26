@@ -3,6 +3,7 @@ package com.example.myapplication.script.action
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
+import android.util.Log
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
@@ -18,6 +19,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
+private const val TAG = "VisionActionHandlers"
+
 class ClickImageActionHandler(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : EmptyActionHandler(ActionType.CLICK_IMAGE) {
@@ -29,10 +32,14 @@ class ClickImageActionHandler(
         val vision = runtime.visionController ?: return ActionExecutionResult.Failed("图像匹配需要屏幕录制权限")
         val threshold = action.parameters[ActionParameterKey.MATCH_THRESHOLD]?.toFloatOrNull()
             ?.takeIf { it.isFinite() && it in 0f..1f } ?: return ActionExecutionResult.Failed("相似度阈值无效")
+        Log.d(TAG, "event=click_image_start templateId=$templateId threshold=$threshold")
         val match = withContext(dispatcher) { vision.match(templateId, threshold, region(action)) }
             ?: return ActionExecutionResult.Failed("未找到图像模板：$templateId")
+        Log.d(TAG, "event=click_image_match templateId=$templateId x=${match.x} y=${match.y}")
         runtime.recordVisionMatch(match.x, match.y)
-        return if (controller.press(match.x, match.y, 80L)) ActionExecutionResult.Success
+        val pressed = controller.press(match.x, match.y, 80L)
+        Log.d(TAG, "event=click_image_complete templateId=$templateId pressed=$pressed")
+        return if (pressed) ActionExecutionResult.Success
         else ActionExecutionResult.Failed("图像命中后的点击手势执行失败", ActionExecutionFailureCode.GESTURE_REJECTED)
     }
 }
@@ -56,7 +63,11 @@ class WaitImageActionHandler(
         do {
             coroutineContext.ensureActive()
             val match = withContext(dispatcher) { vision.match(templateId, threshold, region(action)) }
-            if (match != null) { runtime.recordVisionMatch(match.x, match.y); return ActionExecutionResult.Success }
+            if (match != null) {
+                Log.d(TAG, "event=wait_image_match templateId=$templateId x=${match.x} y=${match.y}")
+                runtime.recordVisionMatch(match.x, match.y)
+                return ActionExecutionResult.Success
+            }
             if (elapsedRealtimeMillis() >= deadline) break
             kotlinx.coroutines.delay(pollIntervalMillis.coerceAtLeast(1L))
         } while (true)
@@ -97,6 +108,7 @@ class OcrTextActionHandler(
         }
         val stored = runtime.setVariable(variableName, text) || runtime.createVariable(variableName, text)
         return if (stored) {
+            Log.d(TAG, "event=ocr_complete stored=true textLength=${text.length}")
             ActionExecutionResult.Success
         } else {
             ActionExecutionResult.Failed("OCR 写入失败：变量名无效或无法创建：$variableName")
@@ -176,11 +188,14 @@ class FindColorActionHandler(
         }
         val capture = runtime.visionController?.capture()
             ?: return ActionExecutionResult.Failed("找色需要屏幕录制权限，请先返回主页授权")
-
+        val clickAfterMatch = action.parameters[ActionParameterKey.FIND_COLOR_CLICK]
+            ?.equals("true", ignoreCase = true) == true
+        Log.d(TAG, "event=find_color_start targetColor=${String.format("#%06X", targetColor)} tolerance=$tolerance clickAfterMatch=$clickAfterMatch")
         val match = withContext(scanDispatcher) {
             findFirstMatch(capture.pixels, capture.width, capture.height, targetColor, tolerance)
         } ?: return ActionExecutionResult.Failed("未找到目标颜色")
 
+        Log.d(TAG, "event=find_color_match x=${match.x} y=${match.y}")
         runtime.recordVisionMatch(match.x, match.y)
         val variableName = action.parameters[ActionParameterKey.MATCH_VARIABLE_NAME].orEmpty().trim()
         if (variableName.isNotEmpty()) {
@@ -188,13 +203,14 @@ class FindColorActionHandler(
                 runtime.createVariable(variableName, "${match.x},${match.y}")
             if (!stored) return ActionExecutionResult.Failed("找色坐标写入失败：$variableName")
         }
-        if (action.parameters[ActionParameterKey.FIND_COLOR_CLICK]?.equals("true", ignoreCase = true) == true) {
+        if (clickAfterMatch) {
             val controller = runtime.accessibilityController
                 ?: return ActionExecutionResult.Failed("找色点击需要无障碍服务", ActionExecutionFailureCode.PLATFORM_DISCONNECTED)
             if (!controller.press(match.x, match.y, 80L)) {
                 return ActionExecutionResult.Failed("找色命中后的点击手势执行失败", ActionExecutionFailureCode.GESTURE_REJECTED)
             }
         }
+        Log.d(TAG, "event=find_color_complete clickAfterMatch=$clickAfterMatch")
         return ActionExecutionResult.Success
     }
 
@@ -247,6 +263,7 @@ class PickColorActionHandler : EmptyActionHandler(ActionType.PICK_COLOR) {
         if (x == null || y == null || variableName.isBlank()) {
             return legacyResult(action)
         }
+        Log.d(TAG, "event=pick_color_start x=$x y=$y")
         val capture = runtime.visionController?.capture()
             ?: return ActionExecutionResult.Failed("取色需要屏幕录制权限，请先返回主页授权")
         if (x !in 0 until capture.width || y !in 0 until capture.height) {

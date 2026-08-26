@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -34,6 +35,7 @@ class ImageTemplatePickerOverlay(
 
     fun show(): Boolean {
         if (shown || screenshot.isRecycled) return false
+        Log.d(TAG, "event=image_selection_overlay_show width=${screenshot.width} height=${screenshot.height}")
         root.setBackgroundColor(Color.BLACK)
         root.addView(selectionView, FrameLayout.LayoutParams(-1, -1))
         root.addView(TextView(root.context).apply {
@@ -47,7 +49,8 @@ class ImageTemplatePickerOverlay(
             windowManager.addView(root, params)
             shown = true
             true
-        } catch (_: RuntimeException) {
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Failed to add template picker overlay", error)
             false
         }
     }
@@ -59,6 +62,7 @@ class ImageTemplatePickerOverlay(
 
     private fun confirm() {
         val rect = selectionView.selectionInBitmap ?: return
+        Log.d(TAG, "event=image_selection_overlay_confirm left=${rect.left} top=${rect.top} right=${rect.right} bottom=${rect.bottom}")
         removeWindow()
         try {
             onConfirmed(rect)
@@ -68,6 +72,7 @@ class ImageTemplatePickerOverlay(
     }
 
     private fun cancel() {
+        Log.d(TAG, "event=image_selection_overlay_cancel")
         removeWindow()
         recycleScreenshot()
         onCancelled()
@@ -87,6 +92,10 @@ class ImageTemplatePickerOverlay(
 
     private fun recycleScreenshot() {
         if (!screenshot.isRecycled) screenshot.recycle()
+    }
+
+    private companion object {
+        const val TAG = "ImageTemplatePickerOverlay"
     }
 
     private class SelectionView(context: Context, private val bitmap: Bitmap) : View(context) {

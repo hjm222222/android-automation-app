@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.drawable.GradientDrawable
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -102,13 +103,19 @@ class CoordinatePickerOverlay(
 
     private fun confirm() {
         val point = Point(crosshair.xPosition.toInt(), crosshair.yPosition.toInt())
+        Log.d(TAG, "event=coordinate_overlay_confirm x=${point.x} y=${point.y}")
         dismiss()
         onConfirmed(point)
     }
 
     private fun cancel() {
+        Log.d(TAG, "event=coordinate_overlay_cancel")
         dismiss()
         onCancelled()
+    }
+
+    private companion object {
+        const val TAG = "CoordinatePickerOverlay"
     }
 
     private class CrosshairView(context: Context) : View(context) {
