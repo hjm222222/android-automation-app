@@ -22,7 +22,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.view.inputmethod.InputMethodManager
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -72,6 +71,8 @@ import com.example.myapplication.script.ui.ActionEditorCoordinator
 import com.example.myapplication.script.ui.ActionWorkspaceCoordinator
 import com.example.myapplication.script.ui.WorkspaceCoordinator
 import com.example.myapplication.script.ui.VisionPickerCoordinator
+import com.example.myapplication.script.ui.OverlayPageAnchor
+import com.example.myapplication.script.ui.OverlayPageCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -84,9 +85,6 @@ class FloatingWorkspaceService : Service() {
     private lateinit var workspaceView: View
     private lateinit var workspaceLayoutParams: WindowManager.LayoutParams
     private val applicationController by lazy { AndroidApplicationController(this) }
-    private var pageView: View? = null
-    private var pageLayoutParams: WindowManager.LayoutParams? = null
-    private var pageFollowsWorkspace = false
     // 悬浮窗只负责交互和页面展示，脚本数据由独立控制器统一管理。
     // 未来的 AI、录制、导入功能也应该通过这个入口提供动作。
     // Service 只在组装依赖时读取平台能力，脚本运行层不反向依赖 Service。
@@ -158,6 +156,24 @@ class FloatingWorkspaceService : Service() {
     private var colorPicker: ColorPickerOverlay? = null
     private val shownDialogs = mutableSetOf<AlertDialog>()
     private val visionPickerCoordinator by lazy { VisionPickerCoordinator(applicationContext, windowManager) }
+    private val pageCoordinator by lazy {
+        OverlayPageCoordinator(
+            context = this,
+            windowManager = windowManager,
+            isDestroyed = { isDestroyed },
+            anchorProvider = {
+                val metrics = resources.displayMetrics
+                OverlayPageAnchor(
+                    x = workspaceLayoutParams.x,
+                    y = workspaceLayoutParams.y,
+                    width = workspaceView.width.takeIf { it > 0 } ?: dp(72),
+                    screenWidth = metrics.widthPixels,
+                    screenHeight = metrics.heightPixels
+                )
+            },
+            dp = ::dp
+        )
+    }
     private var screenCaptureResultCode: Int? = null
     private var screenCaptureData: Intent? = null
     private var screenCaptureSession: ScreenCaptureSession? = null
@@ -411,7 +427,7 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun toggleSettings() {
-        if (pageView != null) {
+        if (pageCoordinator.isShowing) {
             dismissPage()
         } else {
             showSettingsPage()
@@ -419,7 +435,7 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun toggleActionList() {
-        if (pageView != null) {
+        if (pageCoordinator.isShowing) {
             dismissPage()
         } else {
             showActionListPage()
@@ -1319,55 +1335,11 @@ class FloatingWorkspaceService : Service() {
     ) {
         if (isDestroyed) return
         dismissPage()
-        pageView = view
-        pageFollowsWorkspace = followWorkspace
-        pageLayoutParams = WindowManager.LayoutParams(
-            width,
-            height,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            if (focusable) WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = if (followWorkspace) Gravity.TOP or Gravity.START else Gravity.CENTER
-            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-        }
-        updateAttachedPagePosition()
-        try {
-            windowManager.addView(view, pageLayoutParams)
-        } catch (_: RuntimeException) {
-            pageView = null
-            pageLayoutParams = null
-            pageFollowsWorkspace = false
-            return
-        }
-        view.post {
-            if (!isDestroyed && view === pageView && view.isAttachedToWindow) {
-                updateAttachedPagePosition()
-            }
-        }
-        if (focusable) {
-            view.requestFocus()
-        }
+        pageCoordinator.show(view, width, height, focusable, followWorkspace)
     }
 
     private fun dismissPage() {
-        val view = pageView
-        pageView = null
-        pageLayoutParams = null
-        pageFollowsWorkspace = false
-        if (view?.isAttachedToWindow == true) {
-            try {
-                windowManager.removeView(view)
-            } catch (_: RuntimeException) {
-                // The window may already be detached during service teardown.
-            }
-        }
-        if (::workspaceView.isInitialized) {
-            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(
-                workspaceView.windowToken,
-                0
-            )
-        }
+        if (::windowManager.isInitialized) pageCoordinator.dismiss()
     }
 
     private inner class DragListener : View.OnTouchListener {
@@ -1439,33 +1411,7 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun updateAttachedPagePosition() {
-        val params = pageLayoutParams ?: return
-        val view = pageView ?: return
-        val metrics = resources.displayMetrics
-
-        if (pageFollowsWorkspace) {
-            val workspaceWidth = workspaceView.width.takeIf { it > 0 } ?: dp(72)
-            val pageWidth = view.width.takeIf { it > 0 } ?: params.width
-            val pageHeight = view.height.takeIf { it > 0 } ?: params.height
-            val gap = dp(3)
-            val rightAlignedX = workspaceLayoutParams.x + workspaceWidth + gap
-            val leftAlignedX = workspaceLayoutParams.x - pageWidth - gap
-            val maxPageX = (metrics.widthPixels - pageWidth).coerceAtLeast(0)
-
-            params.x = if (rightAlignedX + pageWidth <= metrics.widthPixels) {
-                rightAlignedX
-            } else {
-                leftAlignedX.coerceIn(0, maxPageX)
-            }
-            params.y = workspaceLayoutParams.y.coerceIn(
-                0,
-                (metrics.heightPixels - pageHeight).coerceAtLeast(0)
-            )
-        }
-
-        if (view.isAttachedToWindow) {
-            windowManager.updateViewLayout(view, params)
-        }
+        pageCoordinator.updatePosition()
     }
 
     private fun roundedBackground(color: Int, radius: Int, strokeColor: Int): GradientDrawable =
