@@ -8,7 +8,7 @@ import java.util.UUID
 class ScriptRepository(context: Context) : ScriptRepositoryStore {
     private val directory = File(context.applicationContext.filesDir, "scripts").apply { mkdirs() }
 
-    @Synchronized override fun list(): List<SavedScript> = directory.listFiles { file -> file.extension == "json" }
+    @Synchronized override fun list(): List<SavedScript> = directory.listFiles { file -> file.extension == "json" && file.name != "__draft__.json" }
         ?.mapNotNull { file -> runCatching { ScriptJsonCodec.decode(file.readText()) }.getOrNull() }
         ?.sortedByDescending { it.updatedAt }
         .orEmpty()

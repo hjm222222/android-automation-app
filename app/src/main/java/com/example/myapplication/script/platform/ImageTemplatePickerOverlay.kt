@@ -106,10 +106,15 @@ class ImageTemplatePickerOverlay(
             color = Color.YELLOW
         }
         private var destination = RectF()
+        private var initialized = false
         private var downX = 0f
         private var downY = 0f
+        private var dragMode = DragMode.CREATE
+        private var startSelection: Rect? = null
         var selectionInBitmap: Rect? = null
             private set
+
+        private enum class DragMode { CREATE, MOVE, LEFT, TOP, RIGHT, BOTTOM }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -120,6 +125,17 @@ class ImageTemplatePickerOverlay(
             val left = (width - drawWidth) / 2f
             val top = (height - drawHeight) / 2f
             destination = RectF(left, top, left + drawWidth, top + drawHeight)
+            if (!initialized) {
+                val selectionWidth = (bitmap.width * 0.5f).toInt().coerceAtLeast(2)
+                val selectionHeight = (bitmap.height * 0.3f).toInt().coerceAtLeast(2)
+                selectionInBitmap = Rect(
+                    (bitmap.width - selectionWidth) / 2,
+                    (bitmap.height - selectionHeight) / 2,
+                    (bitmap.width + selectionWidth) / 2,
+                    (bitmap.height + selectionHeight) / 2
+                )
+                initialized = true
+            }
             canvas.drawBitmap(bitmap, null, destination, bitmapPaint)
             selectionInBitmap?.let { selection ->
                 canvas.drawRect(
@@ -140,7 +156,9 @@ class ImageTemplatePickerOverlay(
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.x
                     downY = event.y
-                    updateSelection(event.x, event.y)
+                    startSelection = selectionInBitmap?.let(::Rect)
+                    dragMode = hitTest(event.x, event.y)
+                    if (dragMode == DragMode.CREATE) updateSelection(event.x, event.y)
                     return true
                 }
                 MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
@@ -152,15 +170,38 @@ class ImageTemplatePickerOverlay(
         }
 
         private fun updateSelection(x: Float, y: Float) {
-            val start = viewToBitmap(downX, downY)
             val end = viewToBitmap(x, y)
-            selectionInBitmap = Rect(
-                minOf(start.first, end.first),
-                minOf(start.second, end.second),
-                maxOf(start.first, end.first),
-                maxOf(start.second, end.second)
-            )
+            val start = viewToBitmap(downX, downY)
+            val base = startSelection
+            selectionInBitmap = when (dragMode) {
+                DragMode.CREATE -> Rect(minOf(start.first, end.first), minOf(start.second, end.second), maxOf(start.first, end.first), maxOf(start.second, end.second))
+                DragMode.MOVE -> base?.let { val dx = end.first - start.first; val dy = end.second - start.second; val left = (it.left + dx).coerceIn(0, bitmap.width - it.width()); val top = (it.top + dy).coerceIn(0, bitmap.height - it.height()); Rect(left, top, left + it.width(), top + it.height()) }
+                DragMode.LEFT -> base?.let { Rect(end.first.coerceIn(0, it.right - 1), it.top, it.right, it.bottom) }
+                DragMode.TOP -> base?.let { Rect(it.left, end.second.coerceIn(0, it.bottom - 1), it.right, it.bottom) }
+                DragMode.RIGHT -> base?.let { Rect(it.left, it.top, end.first.coerceIn(it.left + 1, bitmap.width), it.bottom) }
+                DragMode.BOTTOM -> base?.let { Rect(it.left, it.top, it.right, end.second.coerceIn(it.top + 1, bitmap.height)) }
+            }
             invalidate()
+        }
+
+        private fun hitTest(x: Float, y: Float): DragMode {
+            val selection = selectionInBitmap ?: return DragMode.CREATE
+            val point = viewToBitmap(x, y)
+            val edge = maxOf(8, minOf(bitmap.width, bitmap.height) / 40)
+            val nearLeft = kotlin.math.abs(point.first - selection.left) <= edge
+            val nearRight = kotlin.math.abs(point.first - selection.right) <= edge
+            val nearTop = kotlin.math.abs(point.second - selection.top) <= edge
+            val nearBottom = kotlin.math.abs(point.second - selection.bottom) <= edge
+            val withinHorizontalEdge = point.second in selection.top..selection.bottom
+            val withinVerticalEdge = point.first in selection.left..selection.right
+            return when {
+                nearLeft && withinHorizontalEdge -> DragMode.LEFT
+                nearRight && withinHorizontalEdge -> DragMode.RIGHT
+                nearTop && withinVerticalEdge -> DragMode.TOP
+                nearBottom && withinVerticalEdge -> DragMode.BOTTOM
+                point.first in selection.left..selection.right && point.second in selection.top..selection.bottom -> DragMode.MOVE
+                else -> DragMode.CREATE
+            }
         }
 
         private fun viewToBitmap(x: Float, y: Float): Pair<Int, Int> {

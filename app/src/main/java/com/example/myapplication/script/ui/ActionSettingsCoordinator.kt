@@ -76,13 +76,39 @@ class ActionSettingsCoordinator(
         content.addView(afterActionButton, LinearLayout.LayoutParams(-1, dp(44)).apply { bottomMargin = dp(12) })
 
         content.addView(settingSectionTitle("判断条件"))
+        val conditionType = Spinner(context).apply {
+            adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, arrayOf("变量判断", "OCR判断", "图片判断", "区域取色判断"))
+        }
         val variableName = createDialogInput("变量名", "")
         val variableExpectedValue = createDialogInput("比较值", "")
         val variableOperator = Spinner(context).apply {
             adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, arrayOf("==", "<="))
         }
-        val variableJudgement = createVariableJudgement(variableName, variableOperator, variableExpectedValue)
-        content.addView(createExpandableJudgement("变量判断", variableJudgement.view, variableJudgement.onExpand), LinearLayout.LayoutParams(-1, -2))
+        val ocrScope = Spinner(context).apply { adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, arrayOf("区域内判断", "全屏判断")) }
+        val ocrText = createDialogInput("目标文字", "")
+        val imageScope = Spinner(context).apply { adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, arrayOf("区域内判断", "全屏判断")) }
+        val imageId = createDialogInput("图片模板 ID", "")
+        val imageRegion = createRectInputs("图片区域")
+        val color = createDialogInput("颜色（#RRGGBB）", "")
+        val colorRegion = createRectInputs("颜色区域")
+        val tolerance = createDialogInput("颜色容差（0-255）", "0").apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
+        val conditionDetails = listOf(
+            createVariableJudgement(variableName, variableOperator, variableExpectedValue).view,
+            createSimpleCondition(ocrScope, ocrText),
+            createSimpleCondition(imageScope, imageId, imageRegion.row),
+            createSimpleCondition(color, colorRegion.row, tolerance)
+        )
+        content.addView(conditionType, LinearLayout.LayoutParams(-1, dp(44)).apply { bottomMargin = dp(8) })
+        conditionDetails.forEachIndexed { index, view ->
+            view.visibility = if (index == 0) View.VISIBLE else View.GONE
+            content.addView(view, LinearLayout.LayoutParams(-1, -2))
+        }
+        conditionType.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                conditionDetails.forEachIndexed { index, detail -> detail.visibility = if (index == position) View.VISIBLE else View.GONE }
+            }
+        }
 
         val scrollView = ScrollView(context).apply { addView(content) }
         val dialog = AlertDialog.Builder(context)
@@ -91,13 +117,18 @@ class ActionSettingsCoordinator(
             .setNegativeButton("取消", null)
             .setPositiveButton("确定") { _, _ ->
                 val input = ActionSettingsInput(
+                    judgementType = com.example.myapplication.script.model.JudgementInputType.values()[conditionType.selectedItemPosition],
                     variableName = variableName.text.toString(),
-                    variableOperator = if (variableOperator.selectedItemPosition == 0) {
-                        VariableComparisonOperator.EQUALS
-                    } else {
-                        VariableComparisonOperator.LESS_THAN_OR_EQUALS
-                    },
+                    variableOperator = if (variableOperator.selectedItemPosition == 0) VariableComparisonOperator.EQUALS else VariableComparisonOperator.LESS_THAN_OR_EQUALS,
                     variableExpectedValue = variableExpectedValue.text.toString(),
+                    ocrScope = if (ocrScope.selectedItemPosition == 0) com.example.myapplication.script.model.TextJudgementScope.REGION else com.example.myapplication.script.model.TextJudgementScope.FULL_SCREEN,
+                    ocrExpectedText = ocrText.text.toString(),
+                    imageScope = if (imageScope.selectedItemPosition == 0) com.example.myapplication.script.model.ImageJudgementScope.REGION else com.example.myapplication.script.model.ImageJudgementScope.FULL_SCREEN,
+                    imageId = imageId.text.toString(),
+                    imageRegion = imageRegion.value(),
+                    regionColor = color.text.toString(),
+                    regionColorRegion = colorRegion.value(),
+                    regionColorTolerance = tolerance.text.toString().toIntOrNull() ?: -1,
                     beforeActions = selectedBeforeActions,
                     afterActions = selectedAfterActions
                 )
@@ -166,6 +197,26 @@ class ActionSettingsCoordinator(
     }
 
     private data class JudgementContent(val view: View, val onExpand: () -> Unit)
+
+    private data class RectInputs(val left: EditText, val top: EditText, val right: EditText, val bottom: EditText, val row: LinearLayout) {
+        fun value(): com.example.myapplication.script.model.Rect? {
+            val values = listOf(left, top, right, bottom).map { it.text.toString().trim().toIntOrNull() ?: return null }
+            return com.example.myapplication.script.model.Rect(values[0], values[1], values[2], values[3])
+        }
+    }
+
+    private fun createRectInputs(label: String): RectInputs {
+        val fields = listOf("左", "上", "右", "下").map { createDialogInput("$label$it", "") }
+        val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        fields.forEach { row.addView(it, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(4) }) }
+        return RectInputs(fields[0], fields[1], fields[2], fields[3], row)
+    }
+
+    private fun createSimpleCondition(vararg views: View): View = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(14), dp(8), dp(14), dp(14))
+        views.forEach { addView(it, LinearLayout.LayoutParams(-1, if (it is Spinner) dp(44) else if (it is LinearLayout) -2 else dp(48)).apply { bottomMargin = dp(8) }) }
+    }
 
     private fun createOcrJudgement(): View = createJudgementView(arrayOf("区域内判断", "全屏判断"), "目标文字")
 

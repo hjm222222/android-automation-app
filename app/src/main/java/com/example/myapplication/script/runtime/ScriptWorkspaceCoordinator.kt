@@ -27,6 +27,17 @@ class ScriptWorkspaceCoordinator(
 
     fun listSavedScripts(): List<SavedScript> = repository.list()
 
+    fun saveDraft(): SavedScript = repository.saveDraft(
+        SavedScript("__draft__", "草稿", workspace.snapshot(), initialVariables)
+    )
+
+    fun loadDraft(): SavedScript? = repository.loadDraft()?.also {
+        workspace.replaceAll(it.actions)
+        initialVariables = it.initialVariables
+    }
+
+    fun discardDraft(): Boolean = repository.deleteDraft()
+
     fun load(id: String): SavedScript? {
         val script = repository.load(id) ?: return null
         currentScriptId = script.id

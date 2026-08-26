@@ -23,6 +23,8 @@ import com.example.myapplication.script.model.JudgementCondition
 import com.example.myapplication.script.model.VariableComparisonOperator
 import com.example.myapplication.script.runtime.ActionConditionEvaluator
 import com.example.myapplication.script.runtime.ScriptRuntime
+import com.example.myapplication.script.model.SavedScript
+import com.example.myapplication.script.repository.ScriptRepositoryStore
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ExampleUnitTest {
@@ -34,7 +36,7 @@ class ExampleUnitTest {
     @Test
     fun defaultState_requiresPermissions() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = MainViewModel()
+        val viewModel = MainViewModel(InMemoryScriptRepository())
 
         assertFalse(viewModel.uiState.value.allPermissionsGranted)
         assertEquals(
@@ -46,7 +48,7 @@ class ExampleUnitTest {
     @Test
     fun allPermissionsGranted_preparesWorkspace() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = MainViewModel(workspacePreparationDelayMs = 0)
+        val viewModel = MainViewModel(InMemoryScriptRepository(), workspacePreparationDelayMs = 0)
 
         viewModel.refreshPermissionState(PermissionState(true, true, true))
         assertEquals(
@@ -66,7 +68,7 @@ class ExampleUnitTest {
     @Test
     fun permissionRevoked_returnsToPermissionPreparation() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = MainViewModel(workspacePreparationDelayMs = 0)
+        val viewModel = MainViewModel(InMemoryScriptRepository(), workspacePreparationDelayMs = 0)
 
         viewModel.refreshPermissionState(PermissionState(true, true, true))
         advanceUntilIdle()
@@ -81,7 +83,7 @@ class ExampleUnitTest {
     @Test
     fun addClickWithoutPermissions_emitsShakeEvent() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = MainViewModel()
+        val viewModel = MainViewModel(InMemoryScriptRepository())
         val event = CompletableDeferred<MainEvent>()
         backgroundScope.launch {
             viewModel.events.take(1).collect { event.complete(it) }
@@ -96,7 +98,7 @@ class ExampleUnitTest {
     @Test
     fun addClickWhilePreparing_doesNotOpenWorkspace() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = MainViewModel(workspacePreparationDelayMs = 3_000)
+        val viewModel = MainViewModel(InMemoryScriptRepository(), workspacePreparationDelayMs = 3_000)
         viewModel.refreshPermissionState(PermissionState(true, true, true))
         val event = CompletableDeferred<MainEvent>()
         backgroundScope.launch {
@@ -111,7 +113,7 @@ class ExampleUnitTest {
     @Test
     fun addClickWithPermissions_emitsOpenWorkspaceEvent() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = MainViewModel(workspacePreparationDelayMs = 0)
+        val viewModel = MainViewModel(InMemoryScriptRepository(), workspacePreparationDelayMs = 0)
         viewModel.refreshPermissionState(PermissionState(true, true, true))
         advanceUntilIdle()
         val event = CompletableDeferred<MainEvent>()
@@ -122,11 +124,11 @@ class ExampleUnitTest {
 
         viewModel.onAddClicked()
 
-        assertEquals(MainEvent.OpenFloatingWorkspace, event.await())
+        assertEquals(MainEvent.OpenFloatingWorkspace(), event.await())
     }
 
     @Test
-    fun variableJudgement_supportsIntEqualsAndLessThanOrEquals() {
+    fun variableJudgement_supportsIntEqualsAndLessThanOrEquals() = runTest {
         val runtime = ScriptRuntime()
         assertTrue(runtime.createVariable("a", "0"))
 
@@ -157,7 +159,7 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun variableJudgement_rejectsNonIntValues() {
+    fun variableJudgement_rejectsNonIntValues() = runTest {
         val runtime = ScriptRuntime()
         assertTrue(runtime.createVariable("a", "1.5"))
 
@@ -172,15 +174,41 @@ class ExampleUnitTest {
     @Test
     fun addClickBeforeEventCollection_deliversPendingWorkspaceEvent() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = MainViewModel(workspacePreparationDelayMs = 0)
+        val viewModel = MainViewModel(InMemoryScriptRepository(), workspacePreparationDelayMs = 0)
         viewModel.refreshPermissionState(PermissionState(true, true, true))
         advanceUntilIdle()
 
         viewModel.onAddClicked()
 
         assertEquals(
-            MainEvent.OpenFloatingWorkspace,
+            MainEvent.OpenFloatingWorkspace(),
             viewModel.events.take(1).first()
         )
+    }
+
+    @Test
+    fun refreshScripts_exposesFormalScriptsAndOpensTheSelectedScript() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val repository = InMemoryScriptRepository().apply {
+            save(SavedScript("script-1", "正式脚本", emptyList()))
+        }
+        val viewModel = MainViewModel(repository)
+        val event = CompletableDeferred<MainEvent>()
+        backgroundScope.launch { viewModel.events.take(1).collect { event.complete(it) } }
+        runCurrent()
+
+        viewModel.onScriptClicked("script-1")
+
+        assertEquals(listOf("正式脚本"), viewModel.uiState.value.scripts.map { it.name })
+        assertEquals(MainEvent.OpenFloatingWorkspace("script-1"), event.await())
+    }
+
+    private class InMemoryScriptRepository : ScriptRepositoryStore {
+        private val scripts = linkedMapOf<String, SavedScript>()
+
+        override fun list(): List<SavedScript> = scripts.values.toList()
+        override fun load(id: String): SavedScript? = scripts[id]
+        override fun save(script: SavedScript): SavedScript = script.also { scripts[it.id] = it }
+        override fun delete(id: String): Boolean = scripts.remove(id) != null
     }
 }

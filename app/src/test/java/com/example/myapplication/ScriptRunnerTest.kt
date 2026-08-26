@@ -19,10 +19,14 @@ import com.example.myapplication.script.api.FailureCode
 import com.example.myapplication.script.api.InsertPosition
 import com.example.myapplication.script.api.ScriptActionApiImpl
 import com.example.myapplication.script.model.ActionCondition
+import android.graphics.Rect as AndroidRect
+import com.example.myapplication.script.model.ImageJudgementScope
+import com.example.myapplication.script.model.Rect
 import com.example.myapplication.script.model.JudgementCondition
 import com.example.myapplication.script.model.TextJudgementScope
 import com.example.myapplication.script.model.ActionExecutionOptions
 import com.example.myapplication.script.model.ActionSettingsInput
+import com.example.myapplication.script.model.JudgementInputType
 import com.example.myapplication.script.model.ActionParameterKey
 import com.example.myapplication.script.model.ActionSettingsMapper
 import com.example.myapplication.script.model.ActionSettingsMappingResult
@@ -397,6 +401,84 @@ class ScriptRunnerTest {
     }
 
     @Test
+    fun actionSettingsMapperMapsOcrImageAndRegionColorInputs() {
+        val ocr = ActionSettingsMapper.map(
+            ActionSettingsInput(
+                judgementType = JudgementInputType.OCR,
+                ocrScope = TextJudgementScope.FULL_SCREEN,
+                ocrExpectedText = " 登录 "
+            )
+        ) as ActionSettingsMappingResult.Success
+        assertEquals(
+            JudgementCondition.OcrText(TextJudgementScope.FULL_SCREEN, "登录"),
+            (ocr.settings.executionOptions.condition as ActionCondition.Judgement).condition
+        )
+
+        val imageRegion = Rect(1, 2, 30, 40)
+        val image = ActionSettingsMapper.map(
+            ActionSettingsInput(
+                judgementType = JudgementInputType.IMAGE,
+                imageScope = ImageJudgementScope.REGION,
+                imageId = " template ",
+                imageRegion = imageRegion
+            )
+        ) as ActionSettingsMappingResult.Success
+        assertEquals(
+            JudgementCondition.Image(ImageJudgementScope.REGION, "template", imageRegion),
+            (image.settings.executionOptions.condition as ActionCondition.Judgement).condition
+        )
+
+        val colorRegion = Rect(0, 0, 8, 9)
+        val color = ActionSettingsMapper.map(
+            ActionSettingsInput(
+                judgementType = JudgementInputType.REGION_COLOR,
+                regionColor = " #aBc123 ",
+                regionColorRegion = colorRegion,
+                regionColorTolerance = 12
+            )
+        ) as ActionSettingsMappingResult.Success
+        assertEquals(
+            JudgementCondition.RegionColor("#aBc123", colorRegion, 12),
+            (color.settings.executionOptions.condition as ActionCondition.Judgement).condition
+        )
+    }
+
+    @Test
+    fun actionSettingsMapperRejectsInvalidImageAndColorInputs() {
+        assertEquals(
+            ActionSettingsMappingResult.Invalid("图片区域无效"),
+            ActionSettingsMapper.map(
+                ActionSettingsInput(
+                    judgementType = JudgementInputType.IMAGE,
+                    imageId = "template",
+                    imageRegion = Rect(0, 0, 0, 1)
+                )
+            )
+        )
+        assertEquals(
+            ActionSettingsMappingResult.Invalid("颜色格式无效"),
+            ActionSettingsMapper.map(
+                ActionSettingsInput(
+                    judgementType = JudgementInputType.REGION_COLOR,
+                    regionColor = "red",
+                    regionColorRegion = Rect(0, 0, 1, 1)
+                )
+            )
+        )
+        assertEquals(
+            ActionSettingsMappingResult.Invalid("颜色容差无效"),
+            ActionSettingsMapper.map(
+                ActionSettingsInput(
+                    judgementType = JudgementInputType.REGION_COLOR,
+                    regionColor = "#112233",
+                    regionColorRegion = Rect(0, 0, 1, 1),
+                    regionColorTolerance = 256
+                )
+            )
+        )
+    }
+
+    @Test
     fun run_executesBeforeMainAndAfterActionsInOrder() = runTest {
         val executedTypes = mutableListOf<ActionType>()
         val handler = RecordingHandler(executedTypes)
@@ -631,7 +713,7 @@ class ScriptRunnerTest {
     }
 
     @Test
-    fun ocrConditionMatchesRecentRecognitionResult() {
+    fun ocrConditionMatchesRecentRecognitionResult() = runTest {
         val runtime = ScriptRuntime()
         runtime.recordOcrText("登录成功 123")
 
@@ -648,6 +730,65 @@ class ScriptRunnerTest {
                 ActionCondition.Judgement(
                     JudgementCondition.OcrText(TextJudgementScope.REGION, "失败")
                 ),
+                runtime
+            )
+        )
+    }
+
+    @Test
+    fun imageConditionUsesFixedThresholdAndScopeRegion() = runTest {
+        val fullScreenVision = ConditionVisionController(match = com.example.myapplication.script.platform.TemplateMatch(1, 2, 0.9f))
+        assertTrue(
+            com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
+                ActionCondition.Judgement(JudgementCondition.Image(ImageJudgementScope.FULL_SCREEN, "template")),
+                ScriptRuntime(visionController = fullScreenVision)
+            )
+        )
+        assertEquals("template", fullScreenVision.templateId)
+        assertEquals(0.85f, fullScreenVision.threshold)
+        assertEquals(null, fullScreenVision.region)
+
+        val region = Rect(10, 20, 30, 40)
+        val regionVision = ConditionVisionController(match = com.example.myapplication.script.platform.TemplateMatch(11, 21, 0.9f))
+        assertTrue(
+            com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
+                ActionCondition.Judgement(JudgementCondition.Image(ImageJudgementScope.REGION, "template", region)),
+                ScriptRuntime(visionController = regionVision)
+            )
+        )
+        assertEquals(region.left, regionVision.region?.left)
+        assertEquals(region.top, regionVision.region?.top)
+        assertEquals(region.right, regionVision.region?.right)
+        assertEquals(region.bottom, regionVision.region?.bottom)
+    }
+
+    @Test
+    fun regionColorConditionMatchesOnlyInsideRegionWithTolerance() = runTest {
+        val capture = ScreenCapture(
+            3,
+            2,
+            intArrayOf(
+                0xFF112233.toInt(), 0xFF122335.toInt(), 0xFFFF0000.toInt(),
+                0xFF000000.toInt(), 0xFF000000.toInt(), 0xFF000000.toInt()
+            )
+        )
+        val runtime = ScriptRuntime(visionController = ConditionVisionController(capture = capture))
+
+        assertTrue(
+            com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
+                ActionCondition.Judgement(JudgementCondition.RegionColor("#112233", Rect(0, 0, 2, 1), tolerance = 0)),
+                runtime
+            )
+        )
+        assertTrue(
+            com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
+                ActionCondition.Judgement(JudgementCondition.RegionColor("#112233", Rect(1, 0, 2, 1), tolerance = 2)),
+                runtime
+            )
+        )
+        assertFalse(
+            com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
+                ActionCondition.Judgement(JudgementCondition.RegionColor("#FF0000", Rect(0, 0, 2, 1))),
                 runtime
             )
         )
@@ -743,6 +884,31 @@ class ScriptRunnerTest {
         )
 
         assertTrue(result is ActionCreationResult.Success)
+    }
+
+    private class ConditionVisionController(
+        private val capture: ScreenCapture? = null,
+        private val match: com.example.myapplication.script.platform.TemplateMatch? = null
+    ) : VisionController {
+        var templateId: String? = null
+            private set
+        var threshold: Float? = null
+            private set
+        var region: AndroidRect? = null
+            private set
+
+        override suspend fun capture(): ScreenCapture? = capture
+
+        override suspend fun match(
+            templateId: String,
+            threshold: Float,
+            region: AndroidRect?
+        ): com.example.myapplication.script.platform.TemplateMatch? {
+            this.templateId = templateId
+            this.threshold = threshold
+            this.region = region
+            return match
+        }
     }
 
     private class MatchingVisionController(matches: List<com.example.myapplication.script.platform.TemplateMatch?>) : VisionController {

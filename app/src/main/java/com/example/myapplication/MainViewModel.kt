@@ -1,10 +1,13 @@
 package com.example.myapplication
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.myapplication.script.model.SavedScript
+import com.example.myapplication.script.repository.ScriptRepositoryStore
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,7 +32,8 @@ enum class WorkspaceStatus {
 
 data class MainUiState(
     val permissions: PermissionUiState = PermissionUiState(),
-    val workspaceStatus: WorkspaceStatus = WorkspaceStatus.NEEDS_PERMISSION
+    val workspaceStatus: WorkspaceStatus = WorkspaceStatus.NEEDS_PERMISSION,
+    val scripts: List<SavedScript> = emptyList()
 ) {
     val allPermissionsGranted: Boolean
         get() = permissions.allGranted
@@ -37,10 +41,11 @@ data class MainUiState(
 
 sealed interface MainEvent {
     data object ShakePermissionCard : MainEvent
-    data object OpenFloatingWorkspace : MainEvent
+    data class OpenFloatingWorkspace(val scriptId: String? = null) : MainEvent
 }
 
 class MainViewModel(
+    private val scriptRepository: ScriptRepositoryStore,
     private val workspacePreparationDelayMs: Long = WORKSPACE_PREPARATION_DELAY_MS
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(MainUiState())
@@ -50,6 +55,14 @@ class MainViewModel(
     val events = eventsChannel.receiveAsFlow()
 
     private var workspacePreparationJob: Job? = null
+
+    init {
+        refreshScripts()
+    }
+
+    fun refreshScripts() {
+        _uiState.update { it.copy(scripts = scriptRepository.list()) }
+    }
 
     fun refreshPermissionState(permissionState: PermissionState) {
         val permissions = PermissionUiState(
@@ -79,9 +92,19 @@ class MainViewModel(
 
     fun onAddClicked() {
         when (_uiState.value.workspaceStatus) {
-            WorkspaceStatus.READY -> eventsChannel.trySend(MainEvent.OpenFloatingWorkspace)
+            WorkspaceStatus.READY -> eventsChannel.trySend(MainEvent.OpenFloatingWorkspace())
             WorkspaceStatus.NEEDS_PERMISSION -> eventsChannel.trySend(MainEvent.ShakePermissionCard)
             WorkspaceStatus.PREPARING -> Unit
+        }
+    }
+
+    fun onScriptClicked(scriptId: String) {
+        eventsChannel.trySend(MainEvent.OpenFloatingWorkspace(scriptId))
+    }
+
+    fun onScriptDeleted(scriptId: String) {
+        if (scriptRepository.delete(scriptId)) {
+            refreshScripts()
         }
     }
 
@@ -104,4 +127,12 @@ class MainViewModel(
     private companion object {
         const val WORKSPACE_PREPARATION_DELAY_MS = 3_000L
     }
+}
+
+class MainViewModelFactory(
+    private val scriptRepository: ScriptRepositoryStore
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        MainViewModel(scriptRepository) as T
 }

@@ -86,6 +86,7 @@ class FloatingWorkspaceService : Service() {
     private var pageView: View? = null
     private var pageLayoutParams: WindowManager.LayoutParams? = null
     private var pageFollowsWorkspace = false
+    private var workspaceHiddenForVisualCapture = false
     // 悬浮窗只负责交互和页面展示，脚本数据由独立控制器统一管理。
     // 未来的 AI、录制、导入功能也应该通过这个入口提供动作。
     // Service 只在组装依赖时读取平台能力，脚本运行层不反向依赖 Service。
@@ -355,7 +356,7 @@ class FloatingWorkspaceService : Service() {
             contentDescription = description
             isClickable = onClick != null
             isFocusable = onClick != null
-            onClick?.let { setOnClickListener { it() } }
+            onClick?.let { setOnClickListener { logButtonClick(description); it() } }
         }
         val params = LinearLayout.LayoutParams(dp(48), dp(48)).apply {
             topMargin = dp(3)
@@ -439,13 +440,13 @@ class FloatingWorkspaceService : Service() {
         val content = FrameLayout(this).apply {
             background = roundedBackground(Color.WHITE, dp(20), Color.rgb(244, 226, 168))
             elevation = dp(8).toFloat()
+            contentDescription = "设置页面"
         }
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(18), dp(18), dp(18))
         }
         content.addView(ScrollView(this).apply { addView(body) }, FrameLayout.LayoutParams(-1, -1))
-        addCloseButton(content)
 
         val scriptName = EditText(this).apply {
             hint = "请输入脚本名称"
@@ -463,52 +464,44 @@ class FloatingWorkspaceService : Service() {
         val savedTitle = TextView(this).apply { text = "已保存脚本"; setTextColor(Color.rgb(106, 89, 64)); setPadding(0, dp(12), 0, dp(4)) }
         body.addView(savedTitle, LinearLayout.LayoutParams(-1, dp(32)))
         scriptWorkspaceCoordinator.listSavedScripts().forEach { saved ->
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            val load = pageButton(saved.name, dp(42)).apply { setOnClickListener { loadScript(saved.id); showSettingsPage() } }
-            row.addView(load, LinearLayout.LayoutParams(0, dp(42), 1f))
-            val delete = pageButton("删除", dp(42)).apply {
-                setTextColor(Color.rgb(156, 83, 64))
+            val load = pageButton(saved.name, dp(42)).apply {
                 setOnClickListener {
-                    AlertDialog.Builder(this@FloatingWorkspaceService).setTitle("删除脚本").setMessage(saved.name)
-                        .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
-                            if (scriptWorkspaceCoordinator.delete(saved.id)) {
-                                showSettingsPage()
-                            } else {
-                                Toast.makeText(this@FloatingWorkspaceService, "删除脚本失败", Toast.LENGTH_SHORT).show()
-                            }
-                        }.create().also(::showOverlayDialog)
+                    logButtonClick(saved.name)
+                    loadScript(saved.id)
+                    showSettingsPage()
                 }
             }
-            row.addView(delete, LinearLayout.LayoutParams(dp(64), dp(42)).apply { leftMargin = dp(6) })
-            body.addView(row, LinearLayout.LayoutParams(-1, dp(46)))
+            body.addView(load, LinearLayout.LayoutParams(-1, dp(42)))
         }
 
+        val nameError = TextView(this).apply {
+            text = "脚本名称不能为空"
+            textSize = 11f
+            setTextColor(Color.rgb(200, 55, 55))
+            visibility = View.GONE
+        }
+        body.addView(nameError, LinearLayout.LayoutParams(-1, dp(24)))
         val saveButton = pageButton("保存", dp(48))
         saveButton.setOnClickListener {
+            logButtonClick("保存")
             val name = scriptName.text.toString().trim()
             if (name.isBlank()) {
-                scriptName.error = "脚本名称不能为空"
-            } else {
-                val saved = scriptWorkspaceCoordinator.save(name)
-                Toast.makeText(this, "脚本已保存", Toast.LENGTH_SHORT).show()
-                showSettingsPage()
+                nameError.visibility = View.VISIBLE
+                return@setOnClickListener
             }
+            nameError.visibility = View.GONE
+            scriptWorkspaceCoordinator.save(name)
+            stopSelf()
         }
-        body.addView(
-            saveButton,
-            LinearLayout.LayoutParams(-1, dp(48)).apply {
-                topMargin = dp(12)
-            }
-        )
+        body.addView(saveButton, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(12) })
 
         val exitButton = pageButton("退出脚本", dp(48))
-        exitButton.setOnClickListener { stopSelf() }
-        body.addView(
-            exitButton,
-            LinearLayout.LayoutParams(-1, dp(48)).apply {
-                topMargin = dp(16)
-            }
-        )
+        exitButton.setOnClickListener {
+            logButtonClick("退出脚本")
+            stopSelf()
+        }
+        body.addView(exitButton, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(16) })
+        addCloseButton(content)
 
         showPage(
             view = content,
@@ -526,7 +519,10 @@ class FloatingWorkspaceService : Service() {
         val content = FrameLayout(this).apply {
             setBackgroundColor(Color.argb(150, 38, 32, 22))
             contentDescription = "添加动作"
-            setOnClickListener { dismissPage() }
+            setOnClickListener {
+                logButtonClick("关闭添加动作")
+                dismissPage()
+            }
         }
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -564,6 +560,7 @@ class FloatingWorkspaceService : Service() {
                         isClickable = true
                         isFocusable = true
                         setOnClickListener {
+                            logButtonClick("动作:${actionType.displayName}")
                             if (actionType in VISUAL_ACTION_TYPES) {
                                 android.util.Log.d(TAG, "event=visual_action_button_click actionType=$actionType")
                             }
@@ -702,7 +699,16 @@ class FloatingWorkspaceService : Service() {
             return
         }
         scriptScope.launch {
+            // #region debug-point C:before-capture
+            reportCaptureDebugEvent("C", "[DEBUG] template screenshot capture started")
+            // #endregion
             val bitmap = screenCaptureSession?.captureBitmap()
+            // #region debug-point C:after-capture
+            reportCaptureDebugEvent(
+                "C",
+                "[DEBUG] template screenshot capture finished bitmap=${bitmap?.width}x${bitmap?.height}"
+            )
+            // #endregion
             if (isDestroyed) {
                 bitmap?.takeIf { !it.isRecycled }?.recycle()
                 return@launch
@@ -747,7 +753,13 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun showImageTemplateEditor(type: ActionType) {
+        // #region debug-point A:image-template-entry
+        reportCaptureDebugEvent("A", "[DEBUG] image template editor entered type=$type")
+        // #endregion
         dismissPage()
+        // #region debug-point B:after-page-dismiss
+        reportCaptureDebugEvent("B", "[DEBUG] page dismissed before template screenshot")
+        // #endregion
         val resultCode = screenCaptureResultCode
         val data = screenCaptureData?.let { Intent(it) }
         if (resultCode != android.app.Activity.RESULT_OK || data == null) {
@@ -755,7 +767,16 @@ class FloatingWorkspaceService : Service() {
             return
         }
         scriptScope.launch {
+            // #region debug-point C:before-template-capture
+            reportCaptureDebugEvent("C", "[DEBUG] template screenshot capture started")
+            // #endregion
             val bitmap = screenCaptureSession?.captureBitmap()
+            // #region debug-point C:after-template-capture
+            reportCaptureDebugEvent(
+                "C",
+                "[DEBUG] template screenshot capture finished bitmap=${bitmap?.width}x${bitmap?.height}"
+            )
+            // #endregion
             if (isDestroyed) {
                 bitmap?.takeIf { !it.isRecycled }?.recycle()
                 return@launch
@@ -783,9 +804,18 @@ class FloatingWorkspaceService : Service() {
                 },
                 onCancelled = { imageTemplatePicker = null; if (!bitmap.isRecycled) bitmap.recycle() }
             )
+            // #region debug-point D:template-picker
+            reportCaptureDebugEvent("D", "[DEBUG] template selection overlay requested")
+            // #endregion
             if (picker.show()) {
                 imageTemplatePicker = picker
+                // #region debug-point D:template-picker-shown
+                reportCaptureDebugEvent("D", "[DEBUG] template selection overlay shown")
+                // #endregion
             } else {
+                // #region debug-point D:template-picker-failed
+                reportCaptureDebugEvent("D", "[DEBUG] template selection overlay failed to show")
+                // #endregion
                 if (!bitmap.isRecycled) bitmap.recycle()
                 android.util.Log.e(TAG, "Failed to show template selection overlay")
                 Toast.makeText(this@FloatingWorkspaceService, "无法显示模板框选窗口", Toast.LENGTH_SHORT).show()
@@ -925,6 +955,7 @@ class FloatingWorkspaceService : Service() {
             isFocusable = true
             contentDescription = "动作设置"
             setOnClickListener {
+                logButtonClick("动作设置")
                 showActionSettings(executionOptions, beforeActions, afterActions) { settings ->
                     executionOptions = settings.executionOptions
                     beforeActions = settings.beforeActions
@@ -1018,6 +1049,7 @@ class FloatingWorkspaceService : Service() {
         detail.visibility = View.GONE
         container.addView(detail, LinearLayout.LayoutParams(-1, -2))
         header.setOnClickListener {
+            logButtonClick(title)
             val expanding = detail.visibility != View.VISIBLE
             detail.visibility = if (expanding) View.VISIBLE else View.GONE
             header.text = "$title  ${if (expanding) "⌃" else "⌄"}"
@@ -1133,7 +1165,10 @@ class FloatingWorkspaceService : Service() {
             background = roundedBackground(Color.rgb(255, 243, 190), dp(12), Color.rgb(244, 226, 168))
             isClickable = true
             isFocusable = true
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                logButtonClick(text)
+                onClick()
+            }
         }
     }
 
@@ -1200,6 +1235,7 @@ class FloatingWorkspaceService : Service() {
             isClickable = true
             isFocusable = true
             setOnClickListener {
+                logButtonClick("应用选择")
                 val expanded = appList.visibility != View.VISIBLE
                 appList.visibility = if (expanded) View.VISIBLE else View.GONE
                 text = if (expanded) "选择应用（点击收起）" else "选择应用（点击展开）"
@@ -1219,7 +1255,10 @@ class FloatingWorkspaceService : Service() {
                 background = roundedBackground(Color.rgb(255, 243, 190), dp(10), Color.TRANSPARENT)
                 isClickable = true
                 isFocusable = true
-                setOnClickListener { showAppControlOperation(application.packageName, application.label) }
+                setOnClickListener {
+                    logButtonClick("应用:${application.label}")
+                    showAppControlOperation(application.packageName, application.label)
+                }
             }
             appList.addView(button, LinearLayout.LayoutParams(-1, dp(58)).apply {
                 bottomMargin = dp(6)
@@ -1238,6 +1277,7 @@ class FloatingWorkspaceService : Service() {
         AlertDialog.Builder(this)
             .setTitle(label)
             .setItems(arrayOf("打开应用")) { _, _ ->
+                logButtonClick("打开应用:$label")
                 when (val result = scriptActionApi.addAction(
                     type = ActionType.APP_CONTROL,
                     fields = mapOf(
@@ -1285,10 +1325,13 @@ class FloatingWorkspaceService : Service() {
             gravity = Gravity.CENTER
             setTextColor(Color.rgb(106, 89, 64))
             background = roundedBackground(Color.rgb(255, 243, 190), dp(16), Color.TRANSPARENT)
-            contentDescription = "关闭"
+            contentDescription = "close"
             isClickable = true
             isFocusable = true
-            setOnClickListener { dismissPage() }
+            setOnClickListener {
+                logButtonClick("close")
+                stopSelf()
+            }
         }
         container.addView(
             closeButton,
@@ -1297,6 +1340,32 @@ class FloatingWorkspaceService : Service() {
                 rightMargin = dp(8)
             }
         )
+    }
+
+    // #region debug-point A-D:capture-state-reporting
+    private fun reportCaptureDebugEvent(hypothesisId: String, message: String) {
+        val workspaceAttached = ::workspaceView.isInitialized && workspaceView.isAttachedToWindow
+        val workspaceVisible = ::workspaceView.isInitialized && workspaceView.visibility == View.VISIBLE
+        val pageAttached = pageView?.isAttachedToWindow == true
+        val body = """{"sessionId":"floating-window-capture","runId":"pre-fix","hypothesisId":"$hypothesisId","location":"FloatingWorkspaceService","msg":"$message","data":{"workspaceAttached":$workspaceAttached,"workspaceVisible":$workspaceVisible,"pageAttached":$pageAttached,"pickerActive":${imageTemplatePicker != null}},"ts":${System.currentTimeMillis()}}"""
+        Thread {
+            runCatching {
+                (java.net.URL("http://10.61.182.126:7777/event").openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                    outputStream.bufferedWriter().use { it.write(body) }
+                    responseCode
+                    disconnect()
+                }
+            }
+        }.start()
+    }
+    // #endregion
+
+    private fun logButtonClick(button: String) {
+        val page = pageView?.contentDescription?.toString()?.takeIf { it.isNotBlank() } ?: "none"
+        android.util.Log.d(TAG, "event=button_click button=$button page=$page")
     }
 
     private fun pageButton(text: String, height: Int): TextView = TextView(this).apply {

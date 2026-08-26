@@ -76,16 +76,42 @@ object ScriptJsonCodec {
     private fun JudgementCondition.toJson(): JSONObject = when (this) {
         is JudgementCondition.Variable -> JSONObject().apply { put("type", "variable"); put("variableName", variableName); put("operator", operator.name); put("expectedValue", expectedValue) }
         is JudgementCondition.OcrText -> JSONObject().apply { put("type", "ocrText"); put("scope", scope.name); put("expectedText", expectedText) }
-        is JudgementCondition.Image -> JSONObject().apply { put("type", "image"); put("scope", scope.name); put("imageId", imageId) }
-        is JudgementCondition.RegionColor -> JSONObject().apply { put("type", "regionColor"); put("color", color); put("region", region) }
+        is JudgementCondition.Image -> JSONObject().apply {
+            put("type", "image"); put("scope", scope.name); put("imageId", imageId); region?.let { put("region", it.toJson()) }
+        }
+        is JudgementCondition.RegionColor -> JSONObject().apply {
+            put("type", "regionColor"); put("color", color); put("region", region.toJson()); put("tolerance", tolerance)
+        }
     }
 
     private fun JSONObject.toJudgementCondition(): JudgementCondition? = when (optString("type")) {
         "variable" -> JudgementCondition.Variable(getString("variableName"), VariableComparisonOperator.valueOf(getString("operator")), getString("expectedValue"))
         "ocrText" -> JudgementCondition.OcrText(TextJudgementScope.valueOf(getString("scope")), getString("expectedText"))
-        "image" -> JudgementCondition.Image(ImageJudgementScope.valueOf(getString("scope")), getString("imageId"))
-        "regionColor" -> JudgementCondition.RegionColor(getString("color"), getString("region"))
+        "image" -> JudgementCondition.Image(ImageJudgementScope.valueOf(getString("scope")), getString("imageId"), optRect("region"))
+        "regionColor" -> JudgementCondition.RegionColor(getString("color"), getRect("region"), optInt("tolerance", 0))
         else -> null
+    }
+
+    private fun Rect.toJson(): JSONObject = JSONObject().apply {
+        put("left", left)
+        put("top", top)
+        put("right", right)
+        put("bottom", bottom)
+    }
+
+    private fun JSONObject.optRect(name: String): Rect? {
+        if (!has(name) || isNull(name)) return null
+        return getRect(name)
+    }
+
+    private fun JSONObject.getRect(name: String): Rect {
+        val value = get(name)
+        return when (value) {
+            is JSONObject -> Rect(value.getInt("left"), value.getInt("top"), value.getInt("right"), value.getInt("bottom"))
+            is String -> value.split(',').map(String::trim).takeIf { it.size == 4 }?.map(String::toInt) ?.let { Rect(it[0], it[1], it[2], it[3]) }
+                ?: throw IllegalArgumentException("Invalid rect")
+            else -> throw IllegalArgumentException("Invalid rect")
+        }.takeIf { it.width > 0 && it.height > 0 } ?: throw IllegalArgumentException("Invalid rect")
     }
 
     private fun Map<String, String>.toJson() = JSONObject().also { obj -> forEach { (key, value) -> obj.put(key, value) } }

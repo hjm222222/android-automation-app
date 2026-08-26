@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +46,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.myapplication.script.model.SavedScript
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
 @Composable
@@ -53,7 +55,7 @@ fun HomeRoute(
     onRequestOverlay: () -> Unit,
     onRequestScreenCapture: () -> Unit,
     onRequestAccessibility: () -> Unit,
-    onOpenFloatingWorkspace: () -> Unit,
+    onOpenFloatingWorkspace: (String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -63,7 +65,7 @@ fun HomeRoute(
         viewModel.events.collect { event ->
             when (event) {
                 MainEvent.ShakePermissionCard -> permissionShakeTrigger++
-                MainEvent.OpenFloatingWorkspace -> onOpenFloatingWorkspace()
+                is MainEvent.OpenFloatingWorkspace -> onOpenFloatingWorkspace(event.scriptId)
             }
         }
     }
@@ -71,6 +73,8 @@ fun HomeRoute(
     HomeScreen(
         state = state,
         onAddClick = viewModel::onAddClicked,
+        onScriptClick = viewModel::onScriptClicked,
+        onDeleteScript = viewModel::onScriptDeleted,
         onRequestOverlay = onRequestOverlay,
         onRequestScreenCapture = onRequestScreenCapture,
         onRequestAccessibility = onRequestAccessibility,
@@ -83,6 +87,8 @@ fun HomeRoute(
 fun HomeScreen(
     state: MainUiState,
     onAddClick: () -> Unit,
+    onScriptClick: (String) -> Unit,
+    onDeleteScript: (String) -> Unit,
     onRequestOverlay: () -> Unit,
     onRequestScreenCapture: () -> Unit,
     onRequestAccessibility: () -> Unit,
@@ -128,6 +134,8 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(30.dp))
             MainContent(
                 state = state,
+                onScriptClick = onScriptClick,
+                onDeleteScript = onDeleteScript,
                 onRequestOverlay = onRequestOverlay,
                 onRequestAccessibility = onRequestAccessibility,
                 onRequestScreenCapture = onRequestScreenCapture,
@@ -140,16 +148,60 @@ fun HomeScreen(
 @Composable
 private fun MainContent(
     state: MainUiState,
+    onScriptClick: (String) -> Unit,
+    onDeleteScript: (String) -> Unit,
     onRequestOverlay: () -> Unit,
     onRequestScreenCapture: () -> Unit,
     onRequestAccessibility: () -> Unit,
     permissionShakeTrigger: Int
 ) {
+    var scriptToDelete by remember { mutableStateOf<SavedScript?>(null) }
+
+    if (scriptToDelete != null) {
+        val script = scriptToDelete!!
+        AlertDialog(
+            onDismissRequest = { scriptToDelete = null },
+            title = { Text("删除脚本") },
+            text = { Text("确定删除“${script.name}”吗？") },
+            confirmButton = {
+                Text(
+                    text = "删除",
+                    modifier = Modifier
+                        .padding(12.dp)
+                        .clickable {
+                            onDeleteScript(script.id)
+                            scriptToDelete = null
+                        },
+                    color = Color(0xFFC83737)
+                )
+            },
+            dismissButton = {
+                Text(
+                    text = "取消",
+                    modifier = Modifier
+                        .padding(12.dp)
+                        .clickable { scriptToDelete = null }
+                )
+            }
+        )
+    }
+
     when (state.workspaceStatus) {
         WorkspaceStatus.READY -> {
             SectionTitle(text = "我的小任务")
             Spacer(modifier = Modifier.height(14.dp))
-            EmptyTaskCard()
+            if (state.scripts.isEmpty()) {
+                EmptyTaskCard()
+            } else {
+                state.scripts.forEach { script ->
+                    TaskCard(
+                        script = script,
+                        onClick = { onScriptClick(script.id) },
+                        onDelete = { scriptToDelete = script }
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
         }
 
         WorkspaceStatus.PREPARING -> WorkspaceLoadingCard()
@@ -313,6 +365,52 @@ private fun EmptyTaskCard(modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun TaskCard(
+    script: SavedScript,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        color = Color.White,
+        shape = RoundedCornerShape(22.dp),
+        shadowElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = script.name,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF53685F)
+                )
+                Text(
+                    text = "${script.actions.size} 个动作",
+                    modifier = Modifier.padding(top = 4.dp),
+                    fontSize = 13.sp,
+                    color = Color(0xFF91A39B)
+                )
+            }
+            Text(
+                text = "删除",
+                modifier = Modifier
+                    .padding(start = 12.dp)
+                    .clickable(onClick = onDelete)
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                color = Color(0xFFC83737),
+                fontSize = 13.sp
+            )
+        }
+    }
+}
+
+@Composable
 private fun PermissionCard(
     state: MainUiState,
     permissionShakeTrigger: Int,
@@ -439,6 +537,8 @@ private fun HomeScreenPreview() {
         HomeScreen(
             state = MainUiState(workspaceStatus = WorkspaceStatus.READY),
             onAddClick = {},
+            onScriptClick = {},
+            onDeleteScript = {},
             onRequestOverlay = {},
             onRequestAccessibility = {},
             onRequestScreenCapture = {},

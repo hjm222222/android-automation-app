@@ -42,6 +42,40 @@ class ScriptWorkspaceCoordinatorTest {
     }
 
     @Test
+    fun draftCanBeSavedLoadedAndDiscardedWithoutChangingCurrentScript() {
+        val repository = InMemoryScriptRepository()
+        val workspace = ScriptWorkspaceController()
+        val coordinator = ScriptWorkspaceCoordinator(repository, workspace)
+        val action = ScriptAction(ActionType.WAIT, id = "draft-wait")
+        workspace.add(action)
+
+        val draft = coordinator.saveDraft()
+        workspace.replaceAll(emptyList())
+        val loaded = coordinator.loadDraft()
+
+        assertEquals("__draft__", draft.id)
+        assertEquals("草稿", draft.name)
+        assertEquals(listOf(action), draft.actions)
+        assertEquals(draft, loaded)
+        assertEquals(listOf(action), coordinator.snapshot())
+        assertNull(coordinator.currentScriptId)
+        assertTrue(coordinator.discardDraft())
+        assertNull(repository.loadDraft())
+    }
+
+    @Test
+    fun draftIsExcludedFromSavedScriptList() {
+        val repository = InMemoryScriptRepository()
+        repository.save(SavedScript("script-1", "正式脚本", emptyList()))
+        repository.saveDraft(SavedScript("ignored", "ignored", emptyList()))
+        val coordinator = ScriptWorkspaceCoordinator(repository, ScriptWorkspaceController())
+
+        val scripts = coordinator.listSavedScripts()
+        assertTrue(scripts.none { it.id == "__draft__" })
+        assertTrue(scripts.any { it.id == "script-1" && it.name == "正式脚本" })
+    }
+
+    @Test
     fun deletingCurrentScriptClearsCurrentStateAndWorkspace() {
         val repository = InMemoryScriptRepository()
         val workspace = ScriptWorkspaceController()
@@ -81,7 +115,7 @@ class ScriptWorkspaceCoordinatorTest {
         var failDeletion = false
         private val scripts = linkedMapOf<String, SavedScript>()
 
-        override fun list(): List<SavedScript> = scripts.values.toList()
+        override fun list(): List<SavedScript> = scripts.values.filter { it.id != "__draft__" }
 
         override fun load(id: String): SavedScript? = scripts[id]
 
