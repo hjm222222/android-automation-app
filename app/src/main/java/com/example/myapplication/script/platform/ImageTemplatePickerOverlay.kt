@@ -48,6 +48,7 @@ class ImageTemplatePickerOverlay(
             shown = true
             true
         } catch (_: RuntimeException) {
+            recycleScreenshot()
             false
         }
     }

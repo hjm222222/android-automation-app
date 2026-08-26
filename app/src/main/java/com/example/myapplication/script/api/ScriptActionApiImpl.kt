@@ -115,7 +115,10 @@ class ScriptActionApiImpl(
         }
         val created = ActionFactory.create(type, fields, settings)
         val replacement = created.actionOrFailure()?.let { action ->
-            displayName?.let { action.copy(displayName = it) } ?: action
+            action.copy(
+                id = actionId,
+                displayName = displayName ?: action.displayName
+            )
         } ?: return created.toApiFailure()
         return apply(WorkspaceActionCommand.Replace(actionId, replacement))
     }

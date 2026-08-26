@@ -41,9 +41,8 @@ class AccessibilityNodePickerOverlay(
         android.graphics.PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
-    fun show() {
-        if (shown) return
-        shown = true
+    fun show(): Boolean {
+        if (shown) return false
         root.setBackgroundColor(Color.argb(32, 255, 248, 210))
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
         val title = TextView(context).apply {
@@ -67,13 +66,21 @@ class AccessibilityNodePickerOverlay(
             overlay.selected = node
             overlay.invalidate()
         }
-        windowManager.addView(root, layoutParams)
+        return try {
+            windowManager.addView(root, layoutParams)
+            shown = true
+            true
+        } catch (_: RuntimeException) {
+            false
+        }
     }
 
     fun dismiss() {
         if (!shown) return
         shown = false
-        windowManager.removeView(root)
+        if (root.isAttachedToWindow) {
+            runCatching { windowManager.removeView(root) }
+        }
     }
 
     private fun confirm() {

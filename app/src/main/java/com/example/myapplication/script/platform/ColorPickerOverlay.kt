@@ -39,9 +39,8 @@ class ColorPickerOverlay(
         android.graphics.PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
-    fun show() {
-        if (shown) return
-        shown = true
+    fun show(): Boolean {
+        if (shown) return false
         root.addView(pickerView, FrameLayout.LayoutParams(-1, -1))
         root.addView(label, FrameLayout.LayoutParams(-2, -2).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -57,8 +56,15 @@ class ColorPickerOverlay(
         }
         root.addView(actions, FrameLayout.LayoutParams(-1, -1))
         pickerView.onColorChanged = ::updateLabel
-        windowManager.addView(root, params)
-        root.post { pickerView.setPosition(root.width / 2f, root.height / 2f) }
+        return try {
+            windowManager.addView(root, params)
+            shown = true
+            root.post { pickerView.setPosition(root.width / 2f, root.height / 2f) }
+            true
+        } catch (_: RuntimeException) {
+            if (!screenshot.isRecycled) screenshot.recycle()
+            false
+        }
     }
 
     private fun button(textValue: String, description: String, action: () -> Unit) = Button(root.context).apply {
@@ -77,7 +83,7 @@ class ColorPickerOverlay(
     fun dismiss() {
         if (!shown) return
         shown = false
-        if (root.isAttachedToWindow) windowManager.removeView(root)
+        if (root.isAttachedToWindow) runCatching { windowManager.removeView(root) }
         if (!screenshot.isRecycled) screenshot.recycle()
     }
 

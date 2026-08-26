@@ -39,6 +39,7 @@ class ScreenCaptureSession(
     private val height = appContext.resources.displayMetrics.heightPixels.coerceAtLeast(1)
     private val reader: ImageReader? = projection?.let { ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2) }
     private var display: VirtualDisplay? = null
+    private val closeLock = Any()
     @Volatile private var valid = projection != null && reader != null
     @Volatile private var closed = false
 
@@ -47,7 +48,7 @@ class ScreenCaptureSession(
 
     init {
         projection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() { valid = false }
+            override fun onStop() { release(stopProjection = false) }
         }, handler)
         if (valid) {
             display = runCatching {
@@ -91,12 +92,18 @@ class ScreenCaptureSession(
     }
 
     override fun close() {
-        if (closed) return
-        closed = true
-        valid = false
+        release(stopProjection = true)
+    }
+
+    private fun release(stopProjection: Boolean) {
+        synchronized(closeLock) {
+            if (closed) return
+            closed = true
+            valid = false
+        }
         runCatching { reader?.setOnImageAvailableListener(null, null) }
         runCatching { display?.release() }
-        runCatching { projection?.stop() }
+        if (stopProjection) runCatching { projection?.stop() }
         runCatching { reader?.close() }
         thread.quitSafely()
     }

@@ -49,9 +49,8 @@ class CoordinatePickerOverlay(
         gravity = Gravity.TOP or Gravity.START
     }
 
-    fun show() {
-        if (shown) return
-        shown = true
+    fun show(): Boolean {
+        if (shown) return false
         root.addView(crosshair, FrameLayout.LayoutParams(-1, -1))
         root.addView(positionLabel, FrameLayout.LayoutParams(-2, -2).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -73,8 +72,14 @@ class CoordinatePickerOverlay(
         crosshair.onPositionChanged = { x, y ->
             positionLabel.text = "坐标：$x, $y"
         }
-        windowManager.addView(root, layoutParams)
-        root.post { crosshair.setPosition(root.width / 2f, root.height / 2f) }
+        return try {
+            windowManager.addView(root, layoutParams)
+            shown = true
+            root.post { crosshair.setPosition(root.width / 2f, root.height / 2f) }
+            true
+        } catch (_: RuntimeException) {
+            false
+        }
     }
 
     private fun styledButton(
@@ -97,7 +102,9 @@ class CoordinatePickerOverlay(
     fun dismiss() {
         if (!shown) return
         shown = false
-        windowManager.removeView(root)
+        if (root.isAttachedToWindow) {
+            runCatching { windowManager.removeView(root) }
+        }
     }
 
     private fun confirm() {

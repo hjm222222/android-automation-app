@@ -63,7 +63,6 @@ import com.example.myapplication.script.platform.ColorPickerOverlay
 import com.example.myapplication.script.platform.ScreenCaptureSession
 import com.example.myapplication.script.platform.ScreenCaptureVisionController
 import com.example.myapplication.script.repository.ScriptRepository
-import com.example.myapplication.script.platform.ImageTemplatePickerOverlay
 import com.example.myapplication.script.platform.ImageTemplateRepository
 import com.example.myapplication.script.platform.AccessibilityController
 import com.example.myapplication.script.platform.AndroidApplicationController
@@ -72,6 +71,7 @@ import com.example.myapplication.script.ui.ActionSettingsCoordinator
 import com.example.myapplication.script.ui.ActionEditorCoordinator
 import com.example.myapplication.script.ui.ActionWorkspaceCoordinator
 import com.example.myapplication.script.ui.WorkspaceCoordinator
+import com.example.myapplication.script.ui.VisionPickerCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -156,7 +156,8 @@ class FloatingWorkspaceService : Service() {
     private var swipeCoordinatePicker: SwipeCoordinatePickerOverlay? = null
     private var nodePicker: AccessibilityNodePickerOverlay? = null
     private var colorPicker: ColorPickerOverlay? = null
-    private var imageTemplatePicker: ImageTemplatePickerOverlay? = null
+    private val shownDialogs = mutableSetOf<AlertDialog>()
+    private val visionPickerCoordinator by lazy { VisionPickerCoordinator(applicationContext, windowManager) }
     private var screenCaptureResultCode: Int? = null
     private var screenCaptureData: Intent? = null
     private var screenCaptureSession: ScreenCaptureSession? = null
@@ -242,6 +243,7 @@ class FloatingWorkspaceService : Service() {
         screenCaptureSession?.close()
         screenCaptureSession = null
         mainHandler.removeCallbacksAndMessages(null)
+        dismissDialogs()
         dismissPickers()
         dismissPage()
         if (::workspaceView.isInitialized && workspaceView.isAttachedToWindow) {
@@ -267,12 +269,7 @@ class FloatingWorkspaceService : Service() {
         } finally {
             colorPicker = null
         }
-        try {
-            imageTemplatePicker?.dismiss()
-        } catch (_: RuntimeException) {
-        } finally {
-            imageTemplatePicker = null
-        }
+        if (::windowManager.isInitialized) visionPickerCoordinator.dismiss()
         try {
             nodePicker?.dismiss()
         } catch (_: RuntimeException) {
@@ -401,7 +398,16 @@ class FloatingWorkspaceService : Service() {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(Color.rgb(132, 99, 32))
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.rgb(132, 99, 32))
         }
+        dialog.setOnDismissListener { shownDialogs.remove(dialog) }
+        shownDialogs.add(dialog)
         dialog.show()
+    }
+
+    private fun dismissDialogs() {
+        shownDialogs.toList().forEach { dialog ->
+            runCatching { dialog.dismiss() }
+        }
+        shownDialogs.clear()
     }
 
     private fun toggleSettings() {
@@ -576,14 +582,19 @@ class FloatingWorkspaceService : Service() {
 
     private fun showSwipeActionEditor() {
         dismissPage()
-        swipeCoordinatePicker = SwipeCoordinatePickerOverlay(
+        val picker = SwipeCoordinatePickerOverlay(
             context = this,
             windowManager = windowManager,
             onConfirmed = { start, end ->
                 if (!isDestroyed) showSwipeActionDialog(start.x, start.y, end.x, end.y)
             },
             onCancelled = { swipeCoordinatePicker = null }
-        ).also { it.show() }
+        )
+        if (picker.show()) {
+            swipeCoordinatePicker = picker
+        } else {
+            Toast.makeText(this, "无法显示滑动坐标选择窗口", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showSwipeActionDialog(startX: Int, startY: Int, endX: Int, endY: Int) {
@@ -641,7 +652,7 @@ class FloatingWorkspaceService : Service() {
             return
         }
         dismissPage()
-        nodePicker = AccessibilityNodePickerOverlay(
+        val picker = AccessibilityNodePickerOverlay(
             context = this,
             windowManager = windowManager,
             nodes = nodes,
@@ -668,7 +679,12 @@ class FloatingWorkspaceService : Service() {
                 }
             },
             onCancelled = { nodePicker = null }
-        ).also { it.show() }
+        )
+        if (picker.show()) {
+            nodePicker = picker
+        } else {
+            Toast.makeText(this, "无法显示控件选择窗口", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showFindColorEditor() {
@@ -693,14 +709,10 @@ class FloatingWorkspaceService : Service() {
                 Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            val picker = ImageTemplatePickerOverlay(
-                context = this@FloatingWorkspaceService,
-                windowManager = windowManager,
+            val shown = visionPickerCoordinator.show(
                 screenshot = bitmap,
-                onConfirmed = { selection ->
-                    imageTemplatePicker = null
-                    if (!bitmap.isRecycled) bitmap.recycle()
-                    if (isDestroyed) return@ImageTemplatePickerOverlay
+                onConfirmed = confirmed@ { selection ->
+                    if (isDestroyed) return@confirmed
                     showActionEditor(
                         ActionType.OCR_TEXT,
                         mapOf(
@@ -711,15 +723,9 @@ class FloatingWorkspaceService : Service() {
                         )
                     )
                 },
-                onCancelled = {
-                    imageTemplatePicker = null
-                    if (!bitmap.isRecycled) bitmap.recycle()
-                }
+                onCancelled = {}
             )
-            if (picker.show()) {
-                imageTemplatePicker = picker
-            } else {
-                if (!bitmap.isRecycled) bitmap.recycle()
+            if (!shown) {
                 Toast.makeText(this@FloatingWorkspaceService, "无法显示 OCR 框选窗口", Toast.LENGTH_SHORT).show()
             }
         }
@@ -743,28 +749,22 @@ class FloatingWorkspaceService : Service() {
                 Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            val picker = ImageTemplatePickerOverlay(
-                this@FloatingWorkspaceService, windowManager, bitmap,
-                onConfirmed = { selection ->
-                    imageTemplatePicker = null
+            val shown = visionPickerCoordinator.show(
+                screenshot = bitmap,
+                onConfirmed = confirmed@ { selection ->
                     if (isDestroyed) {
-                        if (!bitmap.isRecycled) bitmap.recycle()
-                        return@ImageTemplatePickerOverlay
+                        return@confirmed
                     }
                     val id = ImageTemplateRepository(applicationContext).save(bitmap, selection)
-                    if (!bitmap.isRecycled) bitmap.recycle()
                     if (id == null) {
                         Toast.makeText(this@FloatingWorkspaceService, "模板保存失败或框选区域过小", Toast.LENGTH_SHORT).show()
                     } else {
                         showActionEditor(type, mapOf(ActionParameterKey.TEMPLATE_ID to id))
                     }
                 },
-                onCancelled = { imageTemplatePicker = null; if (!bitmap.isRecycled) bitmap.recycle() }
+                onCancelled = {}
             )
-            if (picker.show()) {
-                imageTemplatePicker = picker
-            } else {
-                if (!bitmap.isRecycled) bitmap.recycle()
+            if (!shown) {
                 Toast.makeText(this@FloatingWorkspaceService, "无法显示模板框选窗口", Toast.LENGTH_SHORT).show()
             }
         }
@@ -780,11 +780,15 @@ class FloatingWorkspaceService : Service() {
         }
         scriptScope.launch {
             val bitmap = screenCaptureSession?.captureBitmap()
+            if (isDestroyed) {
+                bitmap?.takeIf { !it.isRecycled }?.recycle()
+                return@launch
+            }
             if (bitmap == null) {
                 Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            colorPicker = ColorPickerOverlay(
+            val picker = ColorPickerOverlay(
                 context = this@FloatingWorkspaceService,
                 windowManager = windowManager,
                 screenshot = bitmap,
@@ -811,20 +815,30 @@ class FloatingWorkspaceService : Service() {
                     }
                 },
                 onCancelled = { colorPicker = null }
-            ).also { it.show() }
+            )
+            if (picker.show()) {
+                colorPicker = picker
+            } else {
+                Toast.makeText(this@FloatingWorkspaceService, "无法显示取色窗口", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     private fun showCoordinateActionEditor(type: ActionType) {
         dismissPage()
-        coordinatePicker = CoordinatePickerOverlay(
+        val picker = CoordinatePickerOverlay(
             context = this,
             windowManager = windowManager,
             onConfirmed = { point ->
                 if (!isDestroyed) showCoordinateActionDialog(type, point.x, point.y)
             },
             onCancelled = { coordinatePicker = null }
-        ).also { it.show() }
+        )
+        if (picker.show()) {
+            coordinatePicker = picker
+        } else {
+            Toast.makeText(this, "无法显示坐标选择窗口", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showCoordinateActionDialog(type: ActionType, x: Int, y: Int) {
@@ -1221,7 +1235,7 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun showAppControlOperation(packageName: String, label: String) {
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle(label)
             .setItems(arrayOf("打开应用")) { _, _ ->
                 when (val result = scriptActionApi.addAction(
@@ -1237,7 +1251,8 @@ class FloatingWorkspaceService : Service() {
                         Toast.makeText(this, result.message, Toast.LENGTH_SHORT).show()
                 }
             }
-            .show()
+            .create()
+        showOverlayDialog(dialog)
     }
 
     private fun chooseActionVariant(type: ActionType, variants: List<String>) {
