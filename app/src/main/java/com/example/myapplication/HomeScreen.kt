@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import kotlinx.coroutines.delay
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -95,6 +96,7 @@ fun HomeScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onAddClick,
+                modifier = Modifier.semantics { contentDescription = "创建任务" },
                 containerColor = Color(0xFFFFE08A),
                 contentColor = Color.White,
                 shape = CircleShape
@@ -422,6 +424,7 @@ private fun PermissionRow(
             fontSize = 12.sp,
             color = if (granted) Color(0xFF79551B) else Color(0xFFD39A32),
             modifier = Modifier
+                .semantics { contentDescription = "请求${title}权限" }
                 .clickable(onClick = onClick)
                 .background(
                     if (granted) Color(0xFFFFD96A) else Color(0xFFFFF1C9),

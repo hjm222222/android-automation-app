@@ -34,6 +34,29 @@ jobs:
       - name: Run unit tests and build debug APK
         run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
 
+      - name: Run Android emulator UI regression
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7_pro
+          script: |
+            mkdir -p artifacts
+            trap 'adb logcat -d > artifacts/logcat.txt; adb exec-out screencap -p > artifacts/emulator-final-screen.png' EXIT
+            ./gradlew connectedDebugAndroidTest --no-daemon
+
+      - name: Upload emulator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-diagnostics
+          path: |
+            artifacts/**
+            app/build/outputs/androidTest-results/**
+            app/build/reports/androidTests/**
+          if-no-files-found: warn
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
