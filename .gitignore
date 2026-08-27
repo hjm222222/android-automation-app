@@ -14,3 +14,19 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# IDE / 工具目录
+.trae/
+.vscode/
+.dbg/
+
+# 调试产物（截图/日志/UI 快照）
+adb-*.txt
+adb-*.png
+current-screen.png
+debug-floating-*.md
+device-ui*.xml
+floating-debug-*.png
+floating-debug-*.xml
+latest-*.log
+latest-*.jpg
