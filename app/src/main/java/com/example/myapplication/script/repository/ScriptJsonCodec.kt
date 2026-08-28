@@ -75,7 +75,12 @@ object ScriptJsonCodec {
 
     private fun JudgementCondition.toJson(): JSONObject = when (this) {
         is JudgementCondition.Variable -> JSONObject().apply { put("type", "variable"); put("variableName", variableName); put("operator", operator.name); put("expectedValue", expectedValue) }
-        is JudgementCondition.OcrText -> JSONObject().apply { put("type", "ocrText"); put("scope", scope.name); put("expectedText", expectedText) }
+        is JudgementCondition.OcrText -> JSONObject().apply {
+            put("type", "ocrText")
+            put("scope", scope.name)
+            put("expectedText", expectedText)
+            region?.let { put("region", it.toJson()) }
+        }
         is JudgementCondition.Image -> JSONObject().apply {
             put("type", "image"); put("scope", scope.name); put("imageId", imageId); region?.let { put("region", it.toJson()) }
         }
@@ -86,7 +91,11 @@ object ScriptJsonCodec {
 
     private fun JSONObject.toJudgementCondition(): JudgementCondition? = when (optString("type")) {
         "variable" -> JudgementCondition.Variable(getString("variableName"), VariableComparisonOperator.valueOf(getString("operator")), getString("expectedValue"))
-        "ocrText" -> JudgementCondition.OcrText(TextJudgementScope.valueOf(getString("scope")), getString("expectedText"))
+        "ocrText" -> JudgementCondition.OcrText(
+            TextJudgementScope.valueOf(getString("scope")),
+            getString("expectedText"),
+            optRect("region")
+        )
         "image" -> JudgementCondition.Image(ImageJudgementScope.valueOf(getString("scope")), getString("imageId"), optRect("region"))
         "regionColor" -> JudgementCondition.RegionColor(getString("color"), getRect("region"), optInt("tolerance", 0))
         else -> null

@@ -6,6 +6,40 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ScriptJsonCodecTest {
+    @Test fun oldOcrConditionWithoutRegionStillDecodes() {
+        val json = """
+            {"id":"s","name":"name","actions":[{"type":"WAIT","id":"a","displayName":"等待","parameters":{},"executionOptions":{"condition":{"type":"judgement","condition":{"type":"ocrText","scope":"FULL_SCREEN","expectedText":"完成"}}},"beforeActions":[],"afterActions":[]}]}
+        """.trimIndent()
+
+        val condition = ScriptJsonCodec.decode(json)
+            ?.actions
+            ?.single()
+            ?.executionOptions
+            ?.condition as ActionCondition.Judgement
+
+        assertEquals(
+            JudgementCondition.OcrText(TextJudgementScope.FULL_SCREEN, "完成", null),
+            condition.condition
+        )
+    }
+
+    @Test fun oldRegionalOcrConditionWithoutRegionKeepsStrictInvalidState() {
+        val json = """
+            {"id":"s","name":"name","actions":[{"type":"WAIT","id":"a","displayName":"等待","parameters":{},"executionOptions":{"condition":{"type":"judgement","condition":{"type":"ocrText","scope":"REGION","expectedText":"完成"}}},"beforeActions":[],"afterActions":[]}]}
+        """.trimIndent()
+
+        val condition = ScriptJsonCodec.decode(json)
+            ?.actions
+            ?.single()
+            ?.executionOptions
+            ?.condition as ActionCondition.Judgement
+
+        assertEquals(
+            JudgementCondition.OcrText(TextJudgementScope.REGION, "完成", null),
+            condition.condition
+        )
+    }
+
     @Test fun roundTripPreservesFullActionTreeAndConditions() {
         val nested = ScriptAction(
             type = ActionType.WAIT,
@@ -33,7 +67,7 @@ class ScriptJsonCodecTest {
     @Test fun roundTripPreservesAllJudgementBranches() {
         val conditions = listOf<JudgementCondition>(
             JudgementCondition.Variable("count", VariableComparisonOperator.LESS_THAN_OR_EQUALS, "3"),
-            JudgementCondition.OcrText(TextJudgementScope.REGION, "文字"),
+            JudgementCondition.OcrText(TextJudgementScope.REGION, "文字", Rect(1, 2, 30, 40)),
             JudgementCondition.Image(ImageJudgementScope.FULL_SCREEN, "image-id"),
             JudgementCondition.Image(ImageJudgementScope.REGION, "region-image-id", Rect(1, 2, 30, 40)),
             JudgementCondition.RegionColor("#123456", Rect(0, 0, 10, 10), tolerance = 5)

@@ -49,10 +49,14 @@ import com.example.myapplication.script.platform.ApplicationController
 import com.example.myapplication.script.platform.ScreenCapture
 import com.example.myapplication.script.platform.VisionController
 import com.example.myapplication.script.registry.ActionDefinitionRegistry
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
+import org.junit.Assert.fail
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Test
@@ -406,12 +410,27 @@ class ScriptRunnerTest {
             ActionSettingsInput(
                 judgementType = JudgementInputType.OCR,
                 ocrScope = TextJudgementScope.FULL_SCREEN,
-                ocrExpectedText = " 登录 "
+                ocrExpectedText = " 登录 ",
+                ocrRegion = Rect(1, 2, 30, 40)
             )
         ) as ActionSettingsMappingResult.Success
         assertEquals(
-            JudgementCondition.OcrText(TextJudgementScope.FULL_SCREEN, "登录"),
+            JudgementCondition.OcrText(TextJudgementScope.FULL_SCREEN, "登录", null),
             (ocr.settings.executionOptions.condition as ActionCondition.Judgement).condition
+        )
+
+        val ocrRegion = Rect(1, 2, 30, 40)
+        val regionalOcr = ActionSettingsMapper.map(
+            ActionSettingsInput(
+                judgementType = JudgementInputType.OCR,
+                ocrScope = TextJudgementScope.REGION,
+                ocrExpectedText = "登录",
+                ocrRegion = ocrRegion
+            )
+        ) as ActionSettingsMappingResult.Success
+        assertEquals(
+            JudgementCondition.OcrText(TextJudgementScope.REGION, "登录", ocrRegion),
+            (regionalOcr.settings.executionOptions.condition as ActionCondition.Judgement).condition
         )
 
         val imageRegion = Rect(1, 2, 30, 40)
@@ -589,19 +608,131 @@ class ScriptRunnerTest {
         val accessibility = RecordingAccessibilityController(true)
         val runtime = ScriptRuntime(
             accessibilityController = accessibility,
-            visionController = RecordingVisionController(ScreenCapture(2, 1, intArrayOf(0xFF000000.toInt(), 0xFFFF0000.toInt())))
+            visionController = RecordingVisionController(ScreenCapture(2, 1, intArrayOf(0xFF123456.toInt(), 0xFFFF0000.toInt())))
         )
         val result = FindColorActionHandler().execute(
             ScriptAction(ActionType.FIND_COLOR, parameters = mapOf(
                 ActionParameterKey.COLOR_HEX to "#FF0000",
                 ActionParameterKey.COLOR_TOLERANCE to "0",
                 ActionParameterKey.MATCH_VARIABLE_NAME to "point",
-                ActionParameterKey.FIND_COLOR_CLICK to "true"
+                ActionParameterKey.FIND_COLOR_CLICK to "true",
+                ActionParameterKey.MATCH_REGION_LEFT to "1",
+                ActionParameterKey.MATCH_REGION_TOP to "0",
+                ActionParameterKey.MATCH_REGION_RIGHT to "2",
+                ActionParameterKey.MATCH_REGION_BOTTOM to "1"
             )), runtime
         )
         assertEquals(ActionExecutionResult.Success, result)
         assertEquals("1,0", runtime.getVariable("point"))
         assertEquals(1 to 0, accessibility.lastPressedPoint)
+    }
+
+    @Test
+    fun ocrActionMapsVisionResultsAndOnlyStoresSuccess() = runTest {
+        val results = listOf(
+            com.example.myapplication.script.platform.VisionResult.Success("识别文字") to ActionExecutionResult.Success,
+            com.example.myapplication.script.platform.VisionResult.NotFound to ActionExecutionResult.Failed("OCR 未识别到文字"),
+            com.example.myapplication.script.platform.VisionResult.Timeout to ActionExecutionResult.Failed("文字识别超时"),
+            com.example.myapplication.script.platform.VisionResult.PermissionDenied to ActionExecutionResult.Failed("OCR 需要屏幕录制权限"),
+            com.example.myapplication.script.platform.VisionResult.Failed("ocr failed") to ActionExecutionResult.Failed("ocr failed")
+        )
+
+        results.forEach { (visionResult, expected) ->
+            val runtime = ScriptRuntime(visionController = ResultVisionController(ocrResult = visionResult))
+            val result = OcrTextActionHandler().execute(
+                ScriptAction(
+                    ActionType.OCR_TEXT,
+                    parameters = mapOf(
+                        ActionParameterKey.OCR_VARIABLE_NAME to "recognized",
+                        ActionParameterKey.MATCH_REGION_LEFT to "0",
+                        ActionParameterKey.MATCH_REGION_TOP to "0",
+                        ActionParameterKey.MATCH_REGION_RIGHT to "10",
+                        ActionParameterKey.MATCH_REGION_BOTTOM to "10"
+                    )
+                ),
+                runtime
+            )
+
+            assertEquals(expected, result)
+            if (expected == ActionExecutionResult.Success) {
+                assertEquals("识别文字", runtime.getVariable("recognized"))
+            } else {
+                assertEquals(null, runtime.getVariable("recognized"))
+            }
+        }
+    }
+
+    @Test
+    fun findColorActionMapsResultsAndDoesNotClickWhenNotFound() = runTest {
+        val results = listOf(
+            com.example.myapplication.script.platform.VisionResult.NotFound to "未找到目标颜色",
+            com.example.myapplication.script.platform.VisionResult.Timeout to "找色超时",
+            com.example.myapplication.script.platform.VisionResult.PermissionDenied to "找色需要屏幕录制权限",
+            com.example.myapplication.script.platform.VisionResult.Failed("scan failed") to "scan failed"
+        )
+
+        results.forEach { (visionResult, message) ->
+            val accessibility = RecordingAccessibilityController(true)
+            val runtime = ScriptRuntime(
+                accessibilityController = accessibility,
+                visionController = ResultVisionController(colorResult = visionResult)
+            )
+            val result = FindColorActionHandler().execute(
+                ScriptAction(
+                    ActionType.FIND_COLOR,
+                    parameters = mapOf(
+                        ActionParameterKey.COLOR_HEX to "#FF0000",
+                        ActionParameterKey.COLOR_TOLERANCE to "0",
+                        ActionParameterKey.FIND_COLOR_CLICK to "true"
+                    )
+                ),
+                runtime
+            )
+
+            assertEquals(message, (result as ActionExecutionResult.Failed).message)
+            assertEquals(null, accessibility.lastPressedPoint)
+        }
+    }
+
+    @Test
+    fun ocrAndFindColorPropagateCancellation() = runTest {
+        val cancellation = CancellationException("cancelled")
+        val vision = ResultVisionController(
+            ocrResult = cancellation,
+            colorResult = cancellation
+        )
+        val ocrAction = ScriptAction(
+            ActionType.OCR_TEXT,
+            parameters = mapOf(
+                ActionParameterKey.OCR_VARIABLE_NAME to "recognized",
+                ActionParameterKey.MATCH_REGION_LEFT to "0",
+                ActionParameterKey.MATCH_REGION_TOP to "0",
+                ActionParameterKey.MATCH_REGION_RIGHT to "10",
+                ActionParameterKey.MATCH_REGION_BOTTOM to "10"
+            )
+        )
+        val colorAction = ScriptAction(
+            ActionType.FIND_COLOR,
+            parameters = mapOf(
+                ActionParameterKey.COLOR_HEX to "#FF0000",
+                ActionParameterKey.COLOR_TOLERANCE to "0"
+            )
+        )
+
+        var ocrThrown = false
+        try {
+            OcrTextActionHandler().execute(ocrAction, ScriptRuntime(visionController = vision))
+        } catch (_: CancellationException) {
+            ocrThrown = true
+        }
+        var colorThrown = false
+        try {
+            FindColorActionHandler().execute(colorAction, ScriptRuntime(visionController = vision))
+        } catch (_: CancellationException) {
+            colorThrown = true
+        }
+        assertTrue(ocrThrown)
+        assertTrue(colorThrown)
     }
 
     @Test
@@ -713,26 +844,65 @@ class ScriptRunnerTest {
     }
 
     @Test
-    fun ocrConditionMatchesRecentRecognitionResult() = runTest {
-        val runtime = ScriptRuntime()
-        runtime.recordOcrText("登录成功 123")
+    fun ocrConditionPassesConfiguredRegionAndFullScreenUsesNull() = runTest {
+        val configuredRegion = Rect(10, 20, 110, 80)
+        val regionalVision = ConditionVisionController(
+            ocrResult = com.example.myapplication.script.platform.VisionResult.Success("登录成功 123")
+        )
 
         assertTrue(
             com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
                 ActionCondition.Judgement(
-                    JudgementCondition.OcrText(TextJudgementScope.REGION, "成功")
+                    JudgementCondition.OcrText(TextJudgementScope.REGION, "成功", configuredRegion)
                 ),
-                runtime
+                ScriptRuntime(visionController = regionalVision)
             )
+        )
+        assertEquals(configuredRegion.left, regionalVision.ocrRegion?.left)
+        assertEquals(configuredRegion.top, regionalVision.ocrRegion?.top)
+        assertEquals(configuredRegion.right, regionalVision.ocrRegion?.right)
+        assertEquals(configuredRegion.bottom, regionalVision.ocrRegion?.bottom)
+
+        val fullScreenVision = ConditionVisionController(
+            ocrResult = com.example.myapplication.script.platform.VisionResult.Success("登录成功 123")
+        )
+        assertTrue(
+            com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
+                ActionCondition.Judgement(
+                    JudgementCondition.OcrText(TextJudgementScope.FULL_SCREEN, "成功", configuredRegion)
+                ),
+                ScriptRuntime(visionController = fullScreenVision)
+            )
+        )
+        assertEquals(null, fullScreenVision.ocrRegion)
+    }
+
+    @Test
+    fun ocrRegionMustBeValidBeforeRecognition() = runTest {
+        assertEquals(
+            ActionSettingsMappingResult.Invalid("OCR 区域无效"),
+            ActionSettingsMapper.map(
+                ActionSettingsInput(
+                    judgementType = JudgementInputType.OCR,
+                    ocrScope = TextJudgementScope.REGION,
+                    ocrExpectedText = "登录",
+                    ocrRegion = Rect(10, 20, 10, 80)
+                )
+            )
+        )
+
+        val vision = ConditionVisionController(
+            ocrResult = com.example.myapplication.script.platform.VisionResult.Success("登录")
         )
         assertFalse(
             com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
                 ActionCondition.Judgement(
-                    JudgementCondition.OcrText(TextJudgementScope.REGION, "失败")
+                    JudgementCondition.OcrText(TextJudgementScope.REGION, "登录", null)
                 ),
-                runtime
+                ScriptRuntime(visionController = vision)
             )
         )
+        assertFalse(vision.ocrCalled)
     }
 
     @Test
@@ -763,35 +933,62 @@ class ScriptRunnerTest {
     }
 
     @Test
-    fun regionColorConditionMatchesOnlyInsideRegionWithTolerance() = runTest {
-        val capture = ScreenCapture(
-            3,
-            2,
-            intArrayOf(
-                0xFF112233.toInt(), 0xFF122335.toInt(), 0xFFFF0000.toInt(),
-                0xFF000000.toInt(), 0xFF000000.toInt(), 0xFF000000.toInt()
+    fun regionColorConditionUsesFindColorResult() = runTest {
+        val region = Rect(1, 2, 8, 9)
+        val vision = ConditionVisionController(
+            colorResult = com.example.myapplication.script.platform.VisionResult.Success(
+                android.graphics.Point().apply {
+                    x = 3
+                    y = 4
+                }
             )
         )
-        val runtime = ScriptRuntime(visionController = ConditionVisionController(capture = capture))
 
         assertTrue(
             com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
-                ActionCondition.Judgement(JudgementCondition.RegionColor("#112233", Rect(0, 0, 2, 1), tolerance = 0)),
-                runtime
+                ActionCondition.Judgement(JudgementCondition.RegionColor("#112233", region, tolerance = 2)),
+                ScriptRuntime(visionController = vision)
             )
         )
-        assertTrue(
+    }
+
+    @Test
+    fun visualConditionFailuresReturnFalseAndCancellationPropagates() = runTest {
+        val failures = listOf(
+            com.example.myapplication.script.platform.VisionResult.Timeout,
+            com.example.myapplication.script.platform.VisionResult.PermissionDenied,
+            com.example.myapplication.script.platform.VisionResult.Failed("vision failed")
+        )
+        failures.forEach { failure ->
+            assertFalse(
+                com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
+                    ActionCondition.Judgement(JudgementCondition.Image(ImageJudgementScope.FULL_SCREEN, "image")),
+                    ScriptRuntime(visionController = ConditionVisionController(result = failure))
+                )
+            )
+        }
+
+        val cancellation = CancellationException("cancelled")
+        val vision = object : VisionController {
+            override suspend fun capture(): ScreenCapture? = null
+            override suspend fun matchResult(
+                templateId: String,
+                threshold: Float,
+                region: AndroidRect?
+            ): com.example.myapplication.script.platform.VisionResult<com.example.myapplication.script.platform.TemplateMatch> {
+                throw cancellation
+            }
+        }
+
+        try {
             com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
-                ActionCondition.Judgement(JudgementCondition.RegionColor("#112233", Rect(1, 0, 2, 1), tolerance = 2)),
-                runtime
+                ActionCondition.Judgement(JudgementCondition.Image(ImageJudgementScope.FULL_SCREEN, "image")),
+                ScriptRuntime(visionController = vision)
             )
-        )
-        assertFalse(
-            com.example.myapplication.script.runtime.ActionConditionEvaluator.shouldExecute(
-                ActionCondition.Judgement(JudgementCondition.RegionColor("#FF0000", Rect(0, 0, 2, 1))),
-                runtime
-            )
-        )
+            fail("CancellationException should propagate")
+        } catch (error: CancellationException) {
+            assertSame(cancellation, error)
+        }
     }
 
     @Test
@@ -830,7 +1027,13 @@ class ScriptRunnerTest {
     @Test
     fun clickImageClicksMatchedCenter() = runTest {
         val accessibility = RecordingAccessibilityController(setTextResult = true)
-        val vision = MatchingVisionController(matches = listOf(com.example.myapplication.script.platform.TemplateMatch(42, 18, 0.95f)))
+        val vision = MatchingVisionController(
+            results = listOf(
+                com.example.myapplication.script.platform.VisionResult.Success(
+                    com.example.myapplication.script.platform.TemplateMatch(42, 18, 0.95f)
+                )
+            )
+        )
 
         val result = ClickImageActionHandler().execute(
             ScriptAction(
@@ -849,10 +1052,18 @@ class ScriptRunnerTest {
 
     @Test
     fun waitImagePollsUntilMatchBeforeTimeout() = runTest {
-        val vision = MatchingVisionController(matches = listOf(null, null, com.example.myapplication.script.platform.TemplateMatch(12, 34, 0.9f)))
+        val vision = MatchingVisionController(
+            results = listOf(
+                com.example.myapplication.script.platform.VisionResult.NotFound,
+                com.example.myapplication.script.platform.VisionResult.NotFound,
+                com.example.myapplication.script.platform.VisionResult.Success(
+                    com.example.myapplication.script.platform.TemplateMatch(12, 34, 0.9f)
+                )
+            )
+        )
         val runtime = ScriptRuntime(visionController = vision)
-
         val result = WaitImageActionHandler(
+            dispatcher = Dispatchers.Unconfined,
             pollIntervalMillis = 1L,
             elapsedRealtimeMillis = { 0L }
         ).execute(
@@ -874,6 +1085,145 @@ class ScriptRunnerTest {
     }
 
     @Test
+    fun clickImageMapsVisionFailuresWithoutFallingBackToNullableMatch() = runTest {
+        val failures = listOf(
+            com.example.myapplication.script.platform.VisionResult.NotFound to "未找到图像模板：template-id",
+            com.example.myapplication.script.platform.VisionResult.Timeout to "图像匹配超时：template-id",
+            com.example.myapplication.script.platform.VisionResult.PermissionDenied to "图像匹配需要屏幕录制权限",
+            com.example.myapplication.script.platform.VisionResult.Failed("matcher failed") to "matcher failed"
+        )
+
+        failures.forEach { (visionResult, message) ->
+            val result = ClickImageActionHandler().execute(
+                ScriptAction(
+                    ActionType.CLICK_IMAGE,
+                    parameters = mapOf(
+                        ActionParameterKey.TEMPLATE_ID to "template-id",
+                        ActionParameterKey.MATCH_THRESHOLD to "0.85"
+                    )
+                ),
+                ScriptRuntime(
+                    accessibilityController = RecordingAccessibilityController(setTextResult = true),
+                    visionController = MatchingVisionController(listOf(visionResult))
+                )
+            )
+
+            assertEquals(message, (result as ActionExecutionResult.Failed).message)
+        }
+    }
+
+    @Test
+    fun waitImageStopsImmediatelyForNonNotFoundResults() = runTest {
+        val results = listOf(
+            com.example.myapplication.script.platform.VisionResult.Timeout to "等待图像超时：template-id",
+            com.example.myapplication.script.platform.VisionResult.PermissionDenied to "图像匹配需要屏幕录制权限",
+            com.example.myapplication.script.platform.VisionResult.Failed("matcher failed") to "matcher failed"
+        )
+
+        results.forEach { (visionResult, message) ->
+            val vision = MatchingVisionController(listOf(visionResult))
+            val result = WaitImageActionHandler(
+                dispatcher = Dispatchers.Unconfined,
+                pollIntervalMillis = 1_000L,
+                elapsedRealtimeMillis = { 0L }
+            ).execute(
+                ScriptAction(
+                    ActionType.WAIT_IMAGE,
+                    parameters = mapOf(
+                        ActionParameterKey.TEMPLATE_ID to "template-id",
+                        ActionParameterKey.MATCH_THRESHOLD to "0.85",
+                        ActionParameterKey.WAIT_TIMEOUT_MILLIS to "1000"
+                    )
+                ),
+                ScriptRuntime(visionController = vision)
+            )
+
+            assertEquals(message, (result as ActionExecutionResult.Failed).message)
+            assertEquals(1, vision.matchCalls)
+        }
+    }
+
+    @Test
+    fun waitImageStopsWhenItsDeadlineIsReached() = runTest {
+        var now = 0L
+        val vision = MatchingVisionController(listOf(com.example.myapplication.script.platform.VisionResult.NotFound))
+        val result = WaitImageActionHandler(
+            dispatcher = Dispatchers.Unconfined,
+            pollIntervalMillis = 100L,
+            elapsedRealtimeMillis = { now.also { now += 100L } }
+        ).execute(
+            ScriptAction(
+                ActionType.WAIT_IMAGE,
+                parameters = mapOf(
+                    ActionParameterKey.TEMPLATE_ID to "template-id",
+                    ActionParameterKey.MATCH_THRESHOLD to "0.85",
+                    ActionParameterKey.WAIT_TIMEOUT_MILLIS to "250"
+                )
+            ),
+            ScriptRuntime(visionController = vision)
+        )
+
+        assertEquals("等待图像超时：template-id", (result as ActionExecutionResult.Failed).message)
+        assertTrue(vision.matchCalls > 0)
+    }
+
+    @Test
+    fun waitImageWithZeroTimeoutDoesNotCapture() = runTest {
+        val vision = MatchingVisionController(listOf(com.example.myapplication.script.platform.VisionResult.NotFound))
+        val result = WaitImageActionHandler(elapsedRealtimeMillis = { 0L }).execute(
+            ScriptAction(
+                ActionType.WAIT_IMAGE,
+                parameters = mapOf(
+                    ActionParameterKey.TEMPLATE_ID to "template-id",
+                    ActionParameterKey.MATCH_THRESHOLD to "0.85",
+                    ActionParameterKey.WAIT_TIMEOUT_MILLIS to "0"
+                )
+            ),
+            ScriptRuntime(visionController = vision)
+        )
+
+        assertEquals("等待图像超时：template-id", (result as ActionExecutionResult.Failed).message)
+        assertEquals(0, vision.matchCalls)
+    }
+
+    @Test
+    fun waitImagePropagatesCancellation() = runTest {
+        val cancellation = CancellationException("cancelled")
+        val vision = object : VisionController {
+            override suspend fun capture(): ScreenCapture? = null
+            override suspend fun matchResult(
+                templateId: String,
+                threshold: Float,
+                region: AndroidRect?
+            ): com.example.myapplication.script.platform.VisionResult<com.example.myapplication.script.platform.TemplateMatch> {
+                throw cancellation
+            }
+        }
+
+        var thrown: CancellationException? = null
+        try {
+            WaitImageActionHandler(
+                dispatcher = Dispatchers.Unconfined,
+                elapsedRealtimeMillis = { 0L }
+            ).execute(
+                ScriptAction(
+                    ActionType.WAIT_IMAGE,
+                    parameters = mapOf(
+                        ActionParameterKey.TEMPLATE_ID to "template-id",
+                        ActionParameterKey.MATCH_THRESHOLD to "0.85",
+                        ActionParameterKey.WAIT_TIMEOUT_MILLIS to "1000"
+                    )
+                ),
+                ScriptRuntime(visionController = vision)
+            )
+        } catch (error: CancellationException) {
+            thrown = error
+        }
+        assertTrue(thrown is CancellationException)
+        assertEquals("cancelled", thrown?.message)
+    }
+
+    @Test
     fun clickImageDoesNotRequireWaitTimeoutParameter() {
         val result = ActionFactory.create(
             ActionType.CLICK_IMAGE,
@@ -888,13 +1238,23 @@ class ScriptRunnerTest {
 
     private class ConditionVisionController(
         private val capture: ScreenCapture? = null,
-        private val match: com.example.myapplication.script.platform.TemplateMatch? = null
+        private val match: com.example.myapplication.script.platform.TemplateMatch? = null,
+        private val result: com.example.myapplication.script.platform.VisionResult<com.example.myapplication.script.platform.TemplateMatch>? =
+            null,
+        private val ocrResult: com.example.myapplication.script.platform.VisionResult<String> =
+            com.example.myapplication.script.platform.VisionResult.NotFound,
+        private val colorResult: com.example.myapplication.script.platform.VisionResult<android.graphics.Point> =
+            com.example.myapplication.script.platform.VisionResult.NotFound
     ) : VisionController {
         var templateId: String? = null
             private set
         var threshold: Float? = null
             private set
         var region: AndroidRect? = null
+            private set
+        var ocrRegion: AndroidRect? = null
+            private set
+        var ocrCalled = false
             private set
 
         override suspend fun capture(): ScreenCapture? = capture
@@ -909,30 +1269,108 @@ class ScriptRunnerTest {
             this.region = region
             return match
         }
+
+        override suspend fun matchResult(
+            templateId: String,
+            threshold: Float,
+            region: AndroidRect?
+        ): com.example.myapplication.script.platform.VisionResult<com.example.myapplication.script.platform.TemplateMatch> {
+            this.templateId = templateId
+            this.threshold = threshold
+            this.region = region
+            return result ?: match?.let {
+                com.example.myapplication.script.platform.VisionResult.Success(it)
+            } ?: com.example.myapplication.script.platform.VisionResult.NotFound
+        }
+
+        override suspend fun recognizeTextResult(
+            region: AndroidRect?
+        ): com.example.myapplication.script.platform.VisionResult<String> {
+            ocrCalled = true
+            ocrRegion = region
+            return ocrResult
+        }
+
+        override suspend fun findColorResult(
+            color: Int,
+            tolerance: Int,
+            region: AndroidRect?
+        ) = colorResult
     }
 
-    private class MatchingVisionController(matches: List<com.example.myapplication.script.platform.TemplateMatch?>) : VisionController {
-        private val queuedMatches = matches.toMutableList()
+    private class MatchingVisionController(
+        private val results: List<com.example.myapplication.script.platform.VisionResult<com.example.myapplication.script.platform.TemplateMatch>>
+    ) : VisionController {
+        private val queuedResults = results.toMutableList()
         var matchCalls = 0
             private set
 
         override suspend fun capture(): ScreenCapture? = null
 
-        override suspend fun match(
+        override suspend fun matchResult(
             templateId: String,
             threshold: Float,
             region: android.graphics.Rect?
-        ): com.example.myapplication.script.platform.TemplateMatch? {
+        ): com.example.myapplication.script.platform.VisionResult<com.example.myapplication.script.platform.TemplateMatch> {
             matchCalls++
-            return queuedMatches.removeFirstOrNull()
+            return queuedResults.removeFirstOrNull()
+                ?: com.example.myapplication.script.platform.VisionResult.NotFound
+        }
+    }
+
+    private class ResultVisionController(
+        private val ocrResult: Any? = com.example.myapplication.script.platform.VisionResult.PermissionDenied,
+        private val colorResult: Any? = com.example.myapplication.script.platform.VisionResult.PermissionDenied
+    ) : VisionController {
+        override suspend fun capture(): ScreenCapture? = null
+
+        override suspend fun recognizeTextResult(region: android.graphics.Rect?): com.example.myapplication.script.platform.VisionResult<String> {
+            if (ocrResult is CancellationException) throw ocrResult
+            @Suppress("UNCHECKED_CAST")
+            return ocrResult as com.example.myapplication.script.platform.VisionResult<String>
+        }
+
+        override suspend fun findColorResult(
+            color: Int,
+            tolerance: Int,
+            region: android.graphics.Rect?
+        ): com.example.myapplication.script.platform.VisionResult<android.graphics.Point> {
+            if (colorResult is CancellationException) throw colorResult
+            @Suppress("UNCHECKED_CAST")
+            return colorResult as com.example.myapplication.script.platform.VisionResult<android.graphics.Point>
         }
     }
 
     private class RecordingVisionController(
         private val screenCapture: ScreenCapture?
     ) : VisionController {
-        override suspend fun capture(): ScreenCapture? {
-            return screenCapture
+        override suspend fun capture(): ScreenCapture? = screenCapture
+
+        override suspend fun findColorResult(
+            color: Int,
+            tolerance: Int,
+            region: android.graphics.Rect?
+        ): com.example.myapplication.script.platform.VisionResult<android.graphics.Point> {
+            val capture = screenCapture ?: return com.example.myapplication.script.platform.VisionResult.PermissionDenied
+            val left = region?.left ?: 0
+            val top = region?.top ?: 0
+            val right = region?.right ?: capture.width
+            val bottom = region?.bottom ?: capture.height
+            for (y in top until bottom) {
+                for (x in left until right) {
+                    val pixel = capture.pixelAt(x, y)
+                    if (kotlin.math.abs(((pixel ushr 16) and 0xFF) - ((color ushr 16) and 0xFF)) <= tolerance &&
+                        kotlin.math.abs(((pixel ushr 8) and 0xFF) - ((color ushr 8) and 0xFF)) <= tolerance &&
+                        kotlin.math.abs((pixel and 0xFF) - (color and 0xFF)) <= tolerance
+                    ) return com.example.myapplication.script.platform.VisionResult.Success(
+                        android.graphics.Point().apply {
+                            this.x = x
+                            this.y = y
+                        }
+                    )
+                }
+            }
+            return com.example.myapplication.script.platform.VisionResult.NotFound
         }
     }
 

@@ -18,6 +18,7 @@ data class ActionSettingsInput(
     val variableExpectedValue: String = "",
     val ocrScope: TextJudgementScope = TextJudgementScope.REGION,
     val ocrExpectedText: String = "",
+    val ocrRegion: Rect? = null,
     val imageScope: ImageJudgementScope = ImageJudgementScope.REGION,
     val imageId: String = "",
     val imageRegion: Rect? = null,
@@ -63,7 +64,12 @@ object ActionSettingsMapper {
             JudgementInputType.OCR -> {
                 val text = input.ocrExpectedText.trim()
                 if (text.isEmpty()) return ActionSettingsMappingResult.Invalid("目标文字不能为空")
-                ActionCondition.Judgement(JudgementCondition.OcrText(input.ocrScope, text))
+                val region = when (input.ocrScope) {
+                    TextJudgementScope.FULL_SCREEN -> null
+                    TextJudgementScope.REGION -> input.ocrRegion.takeIf { it.isValid() }
+                        ?: return ActionSettingsMappingResult.Invalid("OCR 区域无效")
+                }
+                ActionCondition.Judgement(JudgementCondition.OcrText(input.ocrScope, text, region))
             }
             JudgementInputType.IMAGE -> {
                 val id = input.imageId.trim()

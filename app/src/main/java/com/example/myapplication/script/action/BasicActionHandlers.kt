@@ -34,7 +34,10 @@ class ClickActionHandler : EmptyActionHandler(ActionType.CLICK) {
             ?.toLongOrNull()
             ?: DEFAULT_PRESS_DURATION_MILLIS
         if (duration < 1L) return ActionExecutionResult.Failed("按下时长必须大于 0")
-        return if (controller.press(x, y, duration)) {
+        android.util.Log.d("ClickActionHandler", "click_start x=$x y=$y duration=$duration controller=${controller::class.simpleName}")
+        val pressed = controller.press(x, y, duration)
+        android.util.Log.d("ClickActionHandler", "click_complete x=$x y=$y pressed=$pressed")
+        return if (pressed) {
             ActionExecutionResult.Success
         } else {
             ActionExecutionResult.Failed(

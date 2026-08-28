@@ -4,19 +4,17 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.util.Log
-import com.google.android.gms.tasks.Task
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.example.myapplication.script.model.ActionParameterKey
 import com.example.myapplication.script.model.ActionType
 import com.example.myapplication.script.model.ScriptAction
 import com.example.myapplication.script.runtime.ScriptRuntime
+import com.example.myapplication.script.platform.VisionResult
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.coroutineContext
 
 private const val TAG = "VisionActionHandlers"
@@ -35,8 +33,15 @@ class ClickImageActionHandler(
         val threshold = action.parameters[ActionParameterKey.MATCH_THRESHOLD]?.toFloatOrNull()
             ?.takeIf { it.isFinite() && it in 0f..1f } ?: return ActionExecutionResult.Failed("相似度阈值无效")
         logDebug("event=click_image_start templateId=$templateId threshold=$threshold")
-        val match = withContext(dispatcher) { vision.match(templateId, threshold, region(action)) }
-            ?: return ActionExecutionResult.Failed("未找到图像模板：$templateId")
+        val match = when (val result = withContext(dispatcher) {
+            vision.matchResult(templateId, threshold, region(action))
+        }) {
+            is VisionResult.Success -> result.value
+            VisionResult.NotFound -> return ActionExecutionResult.Failed("未找到图像模板：$templateId")
+            VisionResult.Timeout -> return ActionExecutionResult.Failed("图像匹配超时：$templateId")
+            VisionResult.PermissionDenied -> return ActionExecutionResult.Failed("图像匹配需要屏幕录制权限")
+            is VisionResult.Failed -> return ActionExecutionResult.Failed(result.message)
+        }
         logDebug("event=click_image_match templateId=$templateId x=${match.x} y=${match.y}")
         runtime.recordVisionMatch(match.x, match.y)
         val pressed = controller.press(match.x, match.y, 80L)
@@ -62,25 +67,44 @@ class WaitImageActionHandler(
             ?.takeIf { it >= 0L } ?: return ActionExecutionResult.Failed("等待超时时间无效")
         val startedAt = elapsedRealtimeMillis()
         val deadline = if (timeout > Long.MAX_VALUE - startedAt) Long.MAX_VALUE else startedAt + timeout
-        do {
+        while (true) {
             coroutineContext.ensureActive()
-            val match = withContext(dispatcher) { vision.match(templateId, threshold, region(action)) }
-            if (match != null) {
-                logDebug("event=wait_image_match templateId=$templateId x=${match.x} y=${match.y}")
-                runtime.recordVisionMatch(match.x, match.y)
-                return ActionExecutionResult.Success
+            val remaining = deadline - elapsedRealtimeMillis()
+            if (remaining <= 0L) return ActionExecutionResult.Failed("等待图像超时：$templateId")
+
+            val result = withTimeoutOrNull(remaining) {
+                withContext(dispatcher) {
+                    vision.matchResult(templateId, threshold, region(action))
+                }
+            } ?: run {
+                coroutineContext.ensureActive()
+                return ActionExecutionResult.Failed("等待图像超时：$templateId")
             }
-            if (elapsedRealtimeMillis() >= deadline) break
-            kotlinx.coroutines.delay(pollIntervalMillis.coerceAtLeast(1L))
-        } while (true)
-        return ActionExecutionResult.Failed("等待图像超时：$templateId")
+
+            when (result) {
+                is VisionResult.Success -> {
+                    val match = result.value
+                    logDebug("event=wait_image_match templateId=$templateId x=${match.x} y=${match.y}")
+                    runtime.recordVisionMatch(match.x, match.y)
+                    return ActionExecutionResult.Success
+                }
+                VisionResult.NotFound -> Unit
+                VisionResult.Timeout -> return ActionExecutionResult.Failed("等待图像超时：$templateId")
+                VisionResult.PermissionDenied -> return ActionExecutionResult.Failed("图像匹配需要屏幕录制权限")
+                is VisionResult.Failed -> return ActionExecutionResult.Failed(result.message)
+            }
+
+            val delayMillis = (deadline - elapsedRealtimeMillis()).coerceAtMost(pollIntervalMillis.coerceAtLeast(1L))
+            if (delayMillis <= 0L) return ActionExecutionResult.Failed("等待图像超时：$templateId")
+            delay(delayMillis)
+        }
     }
 
     private fun region(action: ScriptAction): Rect? = imageRegion(action)
 }
 
 class OcrTextActionHandler(
-    private val recognize: suspend (Bitmap) -> Result<String> = ::recognizeChineseText
+    private val recognize: (suspend (Bitmap) -> Result<String>)? = null
 ) : EmptyActionHandler(ActionType.OCR_TEXT) {
     override val isAvailable: Boolean = true
 
@@ -90,6 +114,15 @@ class OcrTextActionHandler(
         val region = imageRegion(action) ?: return ActionExecutionResult.Failed("OCR 框选区域无效")
         val vision = runtime.visionController
             ?: return ActionExecutionResult.Failed("OCR 需要屏幕录制权限，请先返回主页授权")
+        if (recognize == null) {
+            return when (val result = vision.recognizeTextResult(region)) {
+                is VisionResult.Success -> storeOcrText(result.value, variableName, action, runtime)
+                VisionResult.NotFound -> ActionExecutionResult.Failed("OCR 未识别到文字")
+                VisionResult.Timeout -> ActionExecutionResult.Failed("文字识别超时")
+                VisionResult.PermissionDenied -> ActionExecutionResult.Failed("OCR 需要屏幕录制权限")
+                is VisionResult.Failed -> ActionExecutionResult.Failed(result.message)
+            }
+        }
         val screenshot = vision.captureBitmap()
             ?: return ActionExecutionResult.Failed("OCR 截图失败，请重新授权屏幕录制")
         val cropped = try {
@@ -99,11 +132,28 @@ class OcrTextActionHandler(
         } ?: return ActionExecutionResult.Failed("OCR 框选区域超出当前屏幕")
 
         val text = try {
-            recognize(cropped).getOrElse { return ActionExecutionResult.Failed("OCR 识别失败") }.trim()
+            val recognition = recognize(cropped)
+            if (recognition.isFailure) {
+                return ActionExecutionResult.Failed("OCR 识别失败")
+            }
+            recognition.getOrThrow().trim()
         } finally {
             if (!cropped.isRecycled) cropped.recycle()
         }
         if (text.isBlank()) return ActionExecutionResult.Failed("OCR 未识别到文字")
+        val targetText = action.parameters[ActionParameterKey.OCR_TARGET_TEXT].orEmpty().trim()
+        if (targetText.isNotEmpty() && !text.contains(targetText)) {
+            return ActionExecutionResult.Failed("OCR 结果未包含目标文字：$targetText")
+        }
+        return storeOcrText(text, variableName, action, runtime)
+    }
+
+    private fun storeOcrText(
+        text: String,
+        variableName: String,
+        action: ScriptAction,
+        runtime: ScriptRuntime
+    ): ActionExecutionResult {
         val targetText = action.parameters[ActionParameterKey.OCR_TARGET_TEXT].orEmpty().trim()
         if (targetText.isNotEmpty() && !text.contains(targetText)) {
             return ActionExecutionResult.Failed("OCR 结果未包含目标文字：$targetText")
@@ -122,7 +172,7 @@ class OcrTextActionHandler(
         if (screenshot.isRecycled || screenshot.width <= 0 || screenshot.height <= 0) return null
         val bounds = Rect(0, 0, screenshot.width, screenshot.height)
         val clipped = Rect(region).apply { intersect(bounds) }
-        if (clipped.width() <= 0 || clipped.height() <= 0) return null
+        if (clipped.right <= clipped.left || clipped.bottom <= clipped.top) return null
         var cropped: Bitmap? = null
         return try {
             cropped = Bitmap.createBitmap(
@@ -143,24 +193,6 @@ class OcrTextActionHandler(
     }
 }
 
-private suspend fun recognizeChineseText(bitmap: Bitmap): Result<String> {
-    val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
-    return try {
-        val text = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await().text
-        Result.success(text)
-    } catch (error: Exception) {
-        Result.failure(error)
-    } finally {
-        recognizer.close()
-    }
-}
-
-private suspend fun <T> Task<T>.await(): T = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
-    addOnSuccessListener { result -> if (continuation.isActive) continuation.resume(result) {} }
-    addOnFailureListener { error -> if (continuation.isActive) continuation.resumeWith(Result.failure(error)) }
-    addOnCanceledListener { continuation.cancel() }
-}
-
 private fun region(action: ScriptAction): Rect? = imageRegion(action)
 
 private fun Int.redChannel(): Int = (this ushr 16) and 0xFF
@@ -173,7 +205,13 @@ private fun imageRegion(action: ScriptAction): Rect? {
         .map { values[it]?.toIntOrNull() }
     if (numbers.any { it == null }) return null
     val (left, top, right, bottom) = numbers.map { it ?: return null }
-    return Rect(left, top, right, bottom).takeIf { it.width() > 0 && it.height() > 0 }
+    if (right <= left || bottom <= top) return null
+    return Rect().apply {
+        this.left = left
+        this.top = top
+        this.right = right
+        this.bottom = bottom
+    }
 }
 
 class FindColorActionHandler(
@@ -189,14 +227,20 @@ class FindColorActionHandler(
         if (tolerance !in 0..MAX_COLOR_TOLERANCE) {
             return ActionExecutionResult.Failed("RGB 通道容差必须在 0 到 255 之间")
         }
-        val capture = runtime.visionController?.capture()
+        val vision = runtime.visionController
             ?: return ActionExecutionResult.Failed("找色需要屏幕录制权限，请先返回主页授权")
         val clickAfterMatch = action.parameters[ActionParameterKey.FIND_COLOR_CLICK]
             ?.equals("true", ignoreCase = true) == true
         logDebug("event=find_color_start targetColor=${String.format("#%06X", targetColor)} tolerance=$tolerance clickAfterMatch=$clickAfterMatch")
-        val match = withContext(scanDispatcher) {
-            findFirstMatch(capture.pixels, capture.width, capture.height, targetColor, tolerance)
-        } ?: return ActionExecutionResult.Failed("未找到目标颜色")
+        val match = when (val result = withContext(scanDispatcher) {
+            vision.findColorResult(targetColor, tolerance, imageRegion(action))
+        }) {
+            is VisionResult.Success -> result.value
+            VisionResult.NotFound -> return ActionExecutionResult.Failed("未找到目标颜色")
+            VisionResult.Timeout -> return ActionExecutionResult.Failed("找色超时")
+            VisionResult.PermissionDenied -> return ActionExecutionResult.Failed("找色需要屏幕录制权限")
+            is VisionResult.Failed -> return ActionExecutionResult.Failed(result.message)
+        }
 
         logDebug("event=find_color_match x=${match.x} y=${match.y}")
         runtime.recordVisionMatch(match.x, match.y)

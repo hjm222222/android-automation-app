@@ -86,6 +86,7 @@ class ActionSettingsCoordinator(
         }
         val ocrScope = Spinner(context).apply { adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, arrayOf("区域内判断", "全屏判断")) }
         val ocrText = createDialogInput("目标文字", "")
+        val ocrRegion = createRectInputs("OCR 区域")
         val imageScope = Spinner(context).apply { adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, arrayOf("区域内判断", "全屏判断")) }
         val imageId = createDialogInput("图片模板 ID", "")
         val imageRegion = createRectInputs("图片区域")
@@ -94,7 +95,7 @@ class ActionSettingsCoordinator(
         val tolerance = createDialogInput("颜色容差（0-255）", "0").apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
         val conditionDetails = listOf(
             createVariableJudgement(variableName, variableOperator, variableExpectedValue).view,
-            createSimpleCondition(ocrScope, ocrText),
+            createSimpleCondition(ocrScope, ocrText, ocrRegion.row),
             createSimpleCondition(imageScope, imageId, imageRegion.row),
             createSimpleCondition(color, colorRegion.row, tolerance)
         )
@@ -123,6 +124,7 @@ class ActionSettingsCoordinator(
                     variableExpectedValue = variableExpectedValue.text.toString(),
                     ocrScope = if (ocrScope.selectedItemPosition == 0) com.example.myapplication.script.model.TextJudgementScope.REGION else com.example.myapplication.script.model.TextJudgementScope.FULL_SCREEN,
                     ocrExpectedText = ocrText.text.toString(),
+                    ocrRegion = ocrRegion.value(),
                     imageScope = if (imageScope.selectedItemPosition == 0) com.example.myapplication.script.model.ImageJudgementScope.REGION else com.example.myapplication.script.model.ImageJudgementScope.FULL_SCREEN,
                     imageId = imageId.text.toString(),
                     imageRegion = imageRegion.value(),

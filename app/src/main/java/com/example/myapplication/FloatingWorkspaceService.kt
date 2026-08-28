@@ -7,6 +7,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -76,6 +78,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class FloatingWorkspaceService : Service() {
@@ -96,7 +100,23 @@ class FloatingWorkspaceService : Service() {
             applicationControllerProvider = { applicationController },
             visionControllerProvider = ::visionControllerOrNull,
             initialVariablesProvider = { scriptWorkspaceCoordinator.initialVariables },
-            handlerResolver = ActionRegistry::handlerFor
+            handlerResolver = ActionRegistry::handlerFor,
+            onActionStarted = { action ->
+                awaitRunPermission()
+                mainHandler.post { runningActionView?.text = "当前动作：${action.displayName}" }
+            },
+            onActionCompleted = { action, result ->
+                if (result is ActionExecutionResult.Success && action.type == ActionType.CLICK) {
+                    val x = action.parameters[ActionParameterKey.X]?.toIntOrNull()
+                    val y = action.parameters[ActionParameterKey.Y]?.toIntOrNull()
+                    if (x != null && y != null) {
+                        mainHandler.post {
+                            runningActionView?.text = "点击已发送：($x, $y)"
+                            showClickMarker(x, y)
+                        }
+                    }
+                }
+            }
         )
     )
     private val scriptWorkspaceCoordinator: ScriptWorkspaceCoordinator by lazy {
@@ -149,6 +169,11 @@ class FloatingWorkspaceService : Service() {
     private val scriptScope = CoroutineScope(Dispatchers.Main.immediate + serviceJob)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var runningJob: Job? = null
+    private var runningView: View? = null
+    private var runningStatusView: TextView? = null
+    private var runningActionView: TextView? = null
+    @Volatile
+    private var isPaused = false
     @Volatile
     private var isDestroyed = false
     private var coordinatePicker: CoordinatePickerOverlay? = null
@@ -254,6 +279,7 @@ class FloatingWorkspaceService : Service() {
         screenCaptureSession = null
         mainHandler.removeCallbacksAndMessages(null)
         dismissPickers()
+        hideRunningWorkspace()
         dismissPage()
         if (::workspaceView.isInitialized && workspaceView.isAttachedToWindow) {
             try {
@@ -370,25 +396,156 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun runScript() {
+        // #region debug-point A:run-script-entry
+        reportCaptureDebugEvent("A", "[DEBUG] script run requested empty=${scriptWorkspace.isEmpty} destroyed=$isDestroyed running=${runningJob?.isActive == true}")
+        // #endregion
         if (isDestroyed || runningJob?.isActive == true) return
         if (scriptWorkspace.isEmpty) {
             showRunResult("请先添加动作")
             return
         }
+        isPaused = false
+        showRunningWorkspace()
         runningJob = scriptScope.launch {
-            val result = scriptWorkspaceCoordinator.run()
+            // #region debug-point A:run-script-start
+            reportCaptureDebugEvent("A", "[DEBUG] script execution started actionCount=${scriptWorkspace.snapshot().size}")
+            // #endregion
+            val result = try {
+                scriptWorkspaceCoordinator.run()
+            } catch (cancelled: CancellationException) {
+                hideRunningWorkspace()
+                runningJob = null
+                return@launch
+            } catch (throwable: Throwable) {
+                android.util.Log.e(TAG, "Script execution crashed", throwable)
+                reportCaptureDebugEvent("D", "[DEBUG] script execution exception type=${throwable::class.simpleName} message=${throwable.message}")
+                ActionExecutionResult.Failed("${throwable::class.simpleName}: ${throwable.message ?: "未知错误"}")
+            }
+            // #region debug-point A:run-script-result
+            reportCaptureDebugEvent("A", "[DEBUG] script execution returned result=${result::class.simpleName}")
+            // #endregion
             val message = when (result) {
                 ActionExecutionResult.Success -> "脚本运行完成"
                 ActionExecutionResult.NotImplemented -> "包含暂未实现的动作"
                 is ActionExecutionResult.Failed -> {
                     if (screenCaptureSession?.isValid == false && result.message.contains("屏幕")) {
-                        runningJob?.cancel()
                         "屏幕录制授权已失效，请重新授权"
                     } else "运行失败：${result.message}"
                 }
             }
+            hideRunningWorkspace()
+            runningJob = null
             showRunResult(message)
         }
+    }
+
+    private suspend fun awaitRunPermission() {
+        while (isPaused) delay(100)
+    }
+
+    private fun showRunningWorkspace() {
+        workspaceView.visibility = View.GONE
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = roundedBackground(Color.WHITE, dp(16), Color.rgb(244, 226, 168))
+            elevation = dp(6).toFloat()
+        }
+        runningStatusView = TextView(this).apply {
+            text = "运行中"
+            textSize = 16f
+            setTextColor(Color.rgb(106, 89, 64))
+        }
+        runningActionView = TextView(this).apply {
+            text = "当前动作：准备中"
+            textSize = 14f
+            setTextColor(Color.rgb(132, 99, 32))
+            setPadding(0, dp(6), 0, dp(8))
+        }
+        val pauseButton = TextView(this).apply {
+            text = "Ⅱ"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            contentDescription = "暂停或继续脚本"
+            isClickable = true
+            isFocusable = true
+            background = roundedBackground(Color.rgb(255, 240, 190), dp(12), Color.TRANSPARENT)
+            setOnClickListener {
+                isPaused = !isPaused
+                text = if (isPaused) "▶" else "Ⅱ"
+                runningStatusView?.text = if (isPaused) "已暂停" else "运行中"
+            }
+        }
+        val closeButton = TextView(this).apply {
+            text = "X"
+            textSize = 16f
+            gravity = Gravity.CENTER
+            contentDescription = "退出脚本运行"
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { stopSelf() }
+        }
+        val controls = LinearLayout(this).apply {
+            gravity = Gravity.END
+            addView(pauseButton, LinearLayout.LayoutParams(dp(48), dp(40)))
+            addView(closeButton, LinearLayout.LayoutParams(dp(48), dp(40)).apply { leftMargin = dp(8) })
+        }
+        panel.addView(runningStatusView)
+        panel.addView(runningActionView)
+        panel.addView(controls)
+        runningView = panel
+        val params = WindowManager.LayoutParams(
+            dp(220),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = dp(24)
+            y = dp(120)
+        }
+        windowManager.addView(panel, params)
+    }
+
+    private fun showClickMarker(x: Int, y: Int) {
+        val marker = View(this).apply {
+            background = object : android.graphics.drawable.Drawable() {
+                private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.rgb(220, 60, 60)
+                    style = Paint.Style.STROKE
+                    strokeWidth = dp(2).toFloat()
+                }
+                override fun draw(canvas: Canvas) {
+                    val center = bounds.width() / 2f
+                    canvas.drawLine(center - dp(12), center, center + dp(12), center, paint)
+                    canvas.drawLine(center, center - dp(12), center, center + dp(12), paint)
+                    canvas.drawCircle(center, center, dp(5).toFloat(), paint)
+                }
+                override fun setAlpha(alpha: Int) = Unit
+                override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) = Unit
+                override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            dp(32), dp(32), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.START; this.x = x - dp(16); this.y = y - dp(16) }
+        windowManager.addView(marker, params)
+        mainHandler.postDelayed({ if (marker.isAttachedToWindow) runCatching { windowManager.removeView(marker) } }, 700L)
+    }
+
+    private fun hideRunningWorkspace() {
+        runningView?.let { view ->
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.removeView(view) }
+            }
+        }
+        runningView = null
+        runningStatusView = null
+        runningActionView = null
+        if (!isDestroyed && ::workspaceView.isInitialized) workspaceView.visibility = View.VISIBLE
     }
 
     private fun showRunResult(message: String) {
@@ -1325,12 +1482,12 @@ class FloatingWorkspaceService : Service() {
             gravity = Gravity.CENTER
             setTextColor(Color.rgb(106, 89, 64))
             background = roundedBackground(Color.rgb(255, 243, 190), dp(16), Color.TRANSPARENT)
-            contentDescription = "close"
+            contentDescription = "关闭脚本列表"
             isClickable = true
             isFocusable = true
             setOnClickListener {
-                logButtonClick("close")
-                stopSelf()
+                logButtonClick("关闭脚本列表")
+                dismissPage()
             }
         }
         container.addView(
@@ -1347,10 +1504,11 @@ class FloatingWorkspaceService : Service() {
         val workspaceAttached = ::workspaceView.isInitialized && workspaceView.isAttachedToWindow
         val workspaceVisible = ::workspaceView.isInitialized && workspaceView.visibility == View.VISIBLE
         val pageAttached = pageView?.isAttachedToWindow == true
-        val body = """{"sessionId":"floating-window-capture","runId":"pre-fix","hypothesisId":"$hypothesisId","location":"FloatingWorkspaceService","msg":"$message","data":{"workspaceAttached":$workspaceAttached,"workspaceVisible":$workspaceVisible,"pageAttached":$pageAttached,"pickerActive":${imageTemplatePicker != null}},"ts":${System.currentTimeMillis()}}"""
+        val body = """{"sessionId":"script-crash","runId":"pre-fix","hypothesisId":"$hypothesisId","location":"FloatingWorkspaceService","msg":"$message","data":{"workspaceAttached":$workspaceAttached,"workspaceVisible":$workspaceVisible,"pageAttached":$pageAttached,"pickerActive":${imageTemplatePicker != null}},"ts":${System.currentTimeMillis()}}"""
+        // #region debug-point instrumentation-endpoint
         Thread {
             runCatching {
-                (java.net.URL("http://10.61.182.126:7777/event").openConnection() as java.net.HttpURLConnection).apply {
+                (java.net.URL("http://10.11.59.126:7777/event").openConnection() as java.net.HttpURLConnection).apply {
                     requestMethod = "POST"
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
@@ -1360,6 +1518,7 @@ class FloatingWorkspaceService : Service() {
                 }
             }
         }.start()
+        // #endregion
     }
     // #endregion
 

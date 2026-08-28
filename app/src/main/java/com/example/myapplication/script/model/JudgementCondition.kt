@@ -34,7 +34,8 @@ sealed interface JudgementCondition {
 
     data class OcrText(
         val scope: TextJudgementScope,
-        val expectedText: String
+        val expectedText: String,
+        val region: Rect? = null
     ) : JudgementCondition
 
     data class Image(

@@ -25,7 +25,9 @@ class ScriptRunner(
     /**
      * 动作解析器由外部注入，运行器不关心 Handler 是手工注册、测试替身还是 DI 提供。
      */
-    private val handlerResolver: (ActionType) -> ScriptActionHandler? = { null }
+    private val handlerResolver: (ActionType) -> ScriptActionHandler? = { null },
+    private val onActionStarted: suspend (ScriptAction) -> Unit = {},
+    private val onActionCompleted: suspend (ScriptAction, ActionExecutionResult) -> Unit = { _, _ -> }
 ) {
     suspend fun run(actions: List<ScriptAction>): ActionExecutionResult {
         val runtime = ScriptRuntime(
@@ -46,6 +48,10 @@ class ScriptRunner(
         runtime: ScriptRuntime
     ): ActionExecutionResult {
         for (action in actions) {
+            onActionStarted(action)
+            // #region debug-point A:action-before
+            android.util.Log.d("ScriptRunner", "[DEBUG] action before id=${action.id} type=${action.type} parameterKeys=${action.parameters.keys}")
+            // #endregion
             if (!ActionConditionEvaluator.shouldExecute(action.executionOptions.condition, runtime)) {
                 continue
             }
@@ -54,6 +60,7 @@ class ScriptRunner(
             if (beforeResult !is ActionExecutionResult.Success) return beforeResult
 
             val result = executeAction(action, runtime)
+            onActionCompleted(action, result)
             if (result !is ActionExecutionResult.Success) return result
 
             val afterResult = runActions(action.afterActions, runtime)

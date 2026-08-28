@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 
 /** Android 无障碍手势的系统实现。 */
 class AccessibilityGestureDispatcher(
@@ -156,29 +157,29 @@ class AccessibilityGestureDispatcher(
     }
 
     private suspend fun dispatch(path: Path, durationMillis: Long): Boolean =
-        suspendCancellableCoroutine { continuation ->
-            val stroke = GestureDescription.StrokeDescription(
-                path,
-                0L,
-                durationMillis
-            )
-            val gesture = GestureDescription.Builder()
-                .addStroke(stroke)
-                .build()
-            val dispatched = service.dispatchGesture(
-                gesture,
-                object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(true)
-                    }
+        withTimeout(3_000L) {
+            suspendCancellableCoroutine { continuation ->
+                android.util.Log.d("AccessibilityGesture", "dispatch_start duration=$durationMillis")
+                val stroke = GestureDescription.StrokeDescription(path, 0L, durationMillis)
+                val gesture = GestureDescription.Builder().addStroke(stroke).build()
+                val dispatched = service.dispatchGesture(
+                    gesture,
+                    object : AccessibilityService.GestureResultCallback() {
+                        override fun onCompleted(gestureDescription: GestureDescription?) {
+                            android.util.Log.d("AccessibilityGesture", "dispatch_completed")
+                            if (continuation.isActive) continuation.resume(true)
+                        }
 
-                    override fun onCancelled(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(false)
-                    }
-                },
-                null
-            )
-            if (!dispatched && continuation.isActive) continuation.resume(false)
-            continuation.invokeOnCancellation { SystemClock.uptimeMillis() }
+                        override fun onCancelled(gestureDescription: GestureDescription?) {
+                            android.util.Log.w("AccessibilityGesture", "dispatch_cancelled")
+                            if (continuation.isActive) continuation.resume(false)
+                        }
+                    },
+                    null
+                )
+                android.util.Log.d("AccessibilityGesture", "dispatch_return accepted=$dispatched")
+                if (!dispatched && continuation.isActive) continuation.resume(false)
+                continuation.invokeOnCancellation { SystemClock.uptimeMillis() }
+            }
         }
 }

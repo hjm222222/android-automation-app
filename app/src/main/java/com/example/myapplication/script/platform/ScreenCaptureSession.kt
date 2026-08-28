@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -44,6 +45,7 @@ class ScreenCaptureSession(
     private var display: VirtualDisplay? = null
     @Volatile private var valid = projection != null && reader != null
     @Volatile private var closed = false
+    private var activeCaptureFinish: (() -> Unit)? = null
 
     val isValid: Boolean
         get() = valid && !closed
@@ -72,63 +74,108 @@ class ScreenCaptureSession(
         }
     }
 
-    suspend fun captureBitmap(): Bitmap? = mutex.withLock {
+    suspend fun captureResult(): VisionResult<Bitmap> = mutex.withLock {
         Log.d(TAG, "event=screen_capture_request valid=$valid closed=$closed width=$width height=$height")
-        if (!valid || closed) return@withLock null
+        if (!valid || closed) return@withLock VisionResult.PermissionDenied
         withContext(Dispatchers.IO) {
-            kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
-                val localReader = reader ?: run { continuation.resumeSafely(null); return@suspendCancellableCoroutine }
-                var finished = false
-                fun finish(bitmap: Bitmap?) {
-                    if (finished) return
-                    finished = true
+            kotlinx.coroutines.suspendCancellableCoroutine<VisionResult<Bitmap>> { continuation ->
+                val localReader = reader ?: run {
+                    val result: VisionResult<Bitmap> = VisionResult.PermissionDenied
+                    continuation.resumeSafely(result)
+                    return@suspendCancellableCoroutine
+                }
+                val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+                lateinit var finish: (VisionResult<Bitmap>) -> Unit
+                lateinit var timeout: Runnable
+                finish = fun(result: VisionResult<Bitmap>) {
+                    if (!finished.compareAndSet(false, true)) return
+                    synchronized(this@ScreenCaptureSession) {
+                        if (activeCaptureFinish === finish) activeCaptureFinish = null
+                    }
+                    val bitmap = (result as? VisionResult.Success)?.value
                     Log.d(TAG, "event=screen_capture_result success=${bitmap != null} width=${bitmap?.width ?: 0} height=${bitmap?.height ?: 0}")
-                    localReader.setOnImageAvailableListener(null, null)
-                    if (continuation.isActive) continuation.resumeSafely(bitmap)
+                    runCatching { localReader.setOnImageAvailableListener(null, null) }
+                    runCatching { handler.removeCallbacks(timeout) }
+                    continuation.resumeSafely(result)
                 }
                 fun captureAvailableImage(imageReader: ImageReader): Boolean {
-                    val image = runCatching { imageReader.acquireLatestImage() }
-                        .onFailure { error -> Log.e(TAG, "Failed to acquire screen capture image", error) }
-                        .getOrNull()
-                        ?: return false
+                    val image = try {
+                        imageReader.acquireLatestImage()
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: RuntimeException) {
+                        Log.e(TAG, "Failed to acquire screen capture image", error)
+                        return false
+                    } ?: return false
                     try {
                         val plane = image.planes.firstOrNull()
                         val buffer = plane?.buffer
                         if (!valid || plane == null || buffer == null) {
                             Log.w(TAG, "Screen capture image has no readable pixel buffer")
-                            finish(null)
+                            finish(VisionResult.Failed("屏幕截图没有可读取的像素数据"))
                         } else {
-                            finish(imageToBitmap(buffer, plane.pixelStride, plane.rowStride, image.width, image.height))
+                            finish(VisionResult.Success(imageToBitmap(buffer, plane.pixelStride, plane.rowStride, image.width, image.height)))
                         }
+                    } catch (error: CancellationException) {
+                        throw error
                     } catch (error: RuntimeException) {
                         Log.e(TAG, "Failed to convert screen capture image to bitmap", error)
-                        finish(null)
+                        finish(VisionResult.Failed("屏幕截图转换失败", error))
                     } finally {
                         image.close()
                     }
                     return true
                 }
-                handler.post {
-                    if (finished || captureAvailableImage(localReader)) return@post
-                    localReader.setOnImageAvailableListener({ imageReader ->
-                        captureAvailableImage(imageReader)
-                    }, handler)
-                }
-                handler.postDelayed({
-                    if (!finished) {
+                timeout = Runnable {
+                    if (!finished.get()) {
                         Log.w(TAG, "Screen capture timed out after $CAPTURE_TIMEOUT_MILLIS ms")
-                        finish(null)
+                        finish(VisionResult.Timeout)
                     }
-                }, CAPTURE_TIMEOUT_MILLIS)
-                continuation.invokeOnCancellation { handler.post { localReader.setOnImageAvailableListener(null, null) } }
+                }
+                synchronized(this@ScreenCaptureSession) {
+                    if (closed) {
+                        finish(VisionResult.PermissionDenied)
+                        return@suspendCancellableCoroutine
+                    }
+                    activeCaptureFinish = { finish(VisionResult.PermissionDenied) }
+                }
+                val capturePosted = handler.post {
+                    if (finished.get() || captureAvailableImage(localReader)) return@post
+                    runCatching {
+                        localReader.setOnImageAvailableListener({ imageReader ->
+                            captureAvailableImage(imageReader)
+                        }, handler)
+                    }.onFailure { error ->
+                        Log.e(TAG, "Failed to register screen capture listener", error)
+                        finish(VisionResult.Failed("屏幕截图监听器注册失败", error))
+                    }
+                }
+                if (!capturePosted) {
+                    finish(VisionResult.Failed("屏幕截图任务无法提交"))
+                    return@suspendCancellableCoroutine
+                }
+                if (!handler.postDelayed(timeout, CAPTURE_TIMEOUT_MILLIS)) {
+                    finish(VisionResult.Failed("屏幕截图超时任务无法提交"))
+                    return@suspendCancellableCoroutine
+                }
+                continuation.invokeOnCancellation { handler.post { finish(VisionResult.PermissionDenied) } }
             }
         }
     }
 
+    suspend fun captureBitmap(): Bitmap? = when (val result = captureResult()) {
+        is VisionResult.Success -> result.value
+        else -> null
+    }
+
     override fun close() {
-        if (closed) return
-        closed = true
-        valid = false
+        val finishCapture = synchronized(this) {
+            if (closed) return
+            closed = true
+            valid = false
+            activeCaptureFinish.also { activeCaptureFinish = null }
+        }
+        runCatching { finishCapture?.invoke() }
         runCatching { reader?.setOnImageAvailableListener(null, null) }
         runCatching { display?.release() }
         runCatching { projection?.stop() }
@@ -151,5 +198,5 @@ class ScreenCaptureSession(
 }
 
 private fun <T> kotlinx.coroutines.CancellableContinuation<T>.resumeSafely(value: T) {
-    if (isActive) resume(value) {}
+    if (isActive) resume(value) { _, _, _ -> }
 }
