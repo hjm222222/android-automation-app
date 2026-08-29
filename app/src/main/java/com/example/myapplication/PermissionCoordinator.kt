@@ -72,5 +72,3 @@ data class PermissionState(
     val accessibilityGranted: Boolean,
     val screenCaptureGranted: Boolean = false
 )
-
-const val TAG = "SC_DEBUG"

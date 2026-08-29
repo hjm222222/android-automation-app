@@ -396,9 +396,6 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun runScript() {
-        // #region debug-point A:run-script-entry
-        reportCaptureDebugEvent("A", "[DEBUG] script run requested empty=${scriptWorkspace.isEmpty} destroyed=$isDestroyed running=${runningJob?.isActive == true}")
-        // #endregion
         if (isDestroyed || runningJob?.isActive == true) return
         if (scriptWorkspace.isEmpty) {
             showRunResult("请先添加动作")
@@ -407,9 +404,6 @@ class FloatingWorkspaceService : Service() {
         isPaused = false
         showRunningWorkspace()
         runningJob = scriptScope.launch {
-            // #region debug-point A:run-script-start
-            reportCaptureDebugEvent("A", "[DEBUG] script execution started actionCount=${scriptWorkspace.snapshot().size}")
-            // #endregion
             val result = try {
                 scriptWorkspaceCoordinator.run()
             } catch (cancelled: CancellationException) {
@@ -418,12 +412,8 @@ class FloatingWorkspaceService : Service() {
                 return@launch
             } catch (throwable: Throwable) {
                 android.util.Log.e(TAG, "Script execution crashed", throwable)
-                reportCaptureDebugEvent("D", "[DEBUG] script execution exception type=${throwable::class.simpleName} message=${throwable.message}")
                 ActionExecutionResult.Failed("${throwable::class.simpleName}: ${throwable.message ?: "未知错误"}")
             }
-            // #region debug-point A:run-script-result
-            reportCaptureDebugEvent("A", "[DEBUG] script execution returned result=${result::class.simpleName}")
-            // #endregion
             val message = when (result) {
                 ActionExecutionResult.Success -> "脚本运行完成"
                 ActionExecutionResult.NotImplemented -> "包含暂未实现的动作"
@@ -856,16 +846,7 @@ class FloatingWorkspaceService : Service() {
             return
         }
         scriptScope.launch {
-            // #region debug-point C:before-capture
-            reportCaptureDebugEvent("C", "[DEBUG] template screenshot capture started")
-            // #endregion
             val bitmap = screenCaptureSession?.captureBitmap()
-            // #region debug-point C:after-capture
-            reportCaptureDebugEvent(
-                "C",
-                "[DEBUG] template screenshot capture finished bitmap=${bitmap?.width}x${bitmap?.height}"
-            )
-            // #endregion
             if (isDestroyed) {
                 bitmap?.takeIf { !it.isRecycled }?.recycle()
                 return@launch
@@ -910,13 +891,7 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun showImageTemplateEditor(type: ActionType) {
-        // #region debug-point A:image-template-entry
-        reportCaptureDebugEvent("A", "[DEBUG] image template editor entered type=$type")
-        // #endregion
         dismissPage()
-        // #region debug-point B:after-page-dismiss
-        reportCaptureDebugEvent("B", "[DEBUG] page dismissed before template screenshot")
-        // #endregion
         val resultCode = screenCaptureResultCode
         val data = screenCaptureData?.let { Intent(it) }
         if (resultCode != android.app.Activity.RESULT_OK || data == null) {
@@ -924,16 +899,7 @@ class FloatingWorkspaceService : Service() {
             return
         }
         scriptScope.launch {
-            // #region debug-point C:before-template-capture
-            reportCaptureDebugEvent("C", "[DEBUG] template screenshot capture started")
-            // #endregion
             val bitmap = screenCaptureSession?.captureBitmap()
-            // #region debug-point C:after-template-capture
-            reportCaptureDebugEvent(
-                "C",
-                "[DEBUG] template screenshot capture finished bitmap=${bitmap?.width}x${bitmap?.height}"
-            )
-            // #endregion
             if (isDestroyed) {
                 bitmap?.takeIf { !it.isRecycled }?.recycle()
                 return@launch
@@ -961,18 +927,9 @@ class FloatingWorkspaceService : Service() {
                 },
                 onCancelled = { imageTemplatePicker = null; if (!bitmap.isRecycled) bitmap.recycle() }
             )
-            // #region debug-point D:template-picker
-            reportCaptureDebugEvent("D", "[DEBUG] template selection overlay requested")
-            // #endregion
             if (picker.show()) {
                 imageTemplatePicker = picker
-                // #region debug-point D:template-picker-shown
-                reportCaptureDebugEvent("D", "[DEBUG] template selection overlay shown")
-                // #endregion
             } else {
-                // #region debug-point D:template-picker-failed
-                reportCaptureDebugEvent("D", "[DEBUG] template selection overlay failed to show")
-                // #endregion
                 if (!bitmap.isRecycled) bitmap.recycle()
                 android.util.Log.e(TAG, "Failed to show template selection overlay")
                 Toast.makeText(this@FloatingWorkspaceService, "无法显示模板框选窗口", Toast.LENGTH_SHORT).show()
@@ -1498,29 +1455,6 @@ class FloatingWorkspaceService : Service() {
             }
         )
     }
-
-    // #region debug-point A-D:capture-state-reporting
-    private fun reportCaptureDebugEvent(hypothesisId: String, message: String) {
-        val workspaceAttached = ::workspaceView.isInitialized && workspaceView.isAttachedToWindow
-        val workspaceVisible = ::workspaceView.isInitialized && workspaceView.visibility == View.VISIBLE
-        val pageAttached = pageView?.isAttachedToWindow == true
-        val body = """{"sessionId":"script-crash","runId":"pre-fix","hypothesisId":"$hypothesisId","location":"FloatingWorkspaceService","msg":"$message","data":{"workspaceAttached":$workspaceAttached,"workspaceVisible":$workspaceVisible,"pageAttached":$pageAttached,"pickerActive":${imageTemplatePicker != null}},"ts":${System.currentTimeMillis()}}"""
-        // #region debug-point instrumentation-endpoint
-        Thread {
-            runCatching {
-                (java.net.URL("http://10.11.59.126:7777/event").openConnection() as java.net.HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
-                    outputStream.bufferedWriter().use { it.write(body) }
-                    responseCode
-                    disconnect()
-                }
-            }
-        }.start()
-        // #endregion
-    }
-    // #endregion
 
     private fun logButtonClick(button: String) {
         val page = pageView?.contentDescription?.toString()?.takeIf { it.isNotBlank() } ?: "none"
