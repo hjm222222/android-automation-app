@@ -49,9 +49,6 @@ class ScriptRunner(
     ): ActionExecutionResult {
         for (action in actions) {
             onActionStarted(action)
-            // #region debug-point A:action-before
-            android.util.Log.d("ScriptRunner", "[DEBUG] action before id=${action.id} type=${action.type} parameterKeys=${action.parameters.keys}")
-            // #endregion
             if (!ActionConditionEvaluator.shouldExecute(action.executionOptions.condition, runtime)) {
                 continue
             }

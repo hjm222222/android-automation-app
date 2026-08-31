@@ -1,7 +1,15 @@
 name: Android CI
 
 on:
+  push:
+    branches:
+      - vision-migration
+      - '**'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
