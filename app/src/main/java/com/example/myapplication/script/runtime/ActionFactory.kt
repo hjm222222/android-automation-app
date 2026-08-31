@@ -147,6 +147,27 @@ object ActionFactory {
             }
         }
 
+        if (type == ActionType.CLICK_OCR_TEXT) {
+            val text = normalizedValues[ActionParameterKey.OCR_TARGET_TEXT].orEmpty()
+            if (text.isBlank()) {
+                return ActionCreationResult.Invalid(ActionCreationFailureCode.MISSING_FIELD, "目标文字不能为空")
+            }
+            val textKeys = listOf(
+                ActionParameterKey.OCR_TEXT_LEFT,
+                ActionParameterKey.OCR_TEXT_TOP,
+                ActionParameterKey.OCR_TEXT_RIGHT,
+                ActionParameterKey.OCR_TEXT_BOTTOM
+            )
+            val values = textKeys.map { normalizedValues[it]?.toIntOrNull() }
+            if (values.any { it == null }) {
+                return ActionCreationResult.Invalid(ActionCreationFailureCode.INVALID_NUMBER, "文字位置必须是有效坐标")
+            }
+            val (left, top, right, bottom) = values.map { it ?: 0 }
+            if (left < 0 || top < 0 || right <= left || bottom <= top) {
+                return ActionCreationResult.Invalid(ActionCreationFailureCode.INVALID_NUMBER, "文字位置无效")
+            }
+        }
+
         if (type == ActionType.OCR_TEXT) {
             val regionKeys = listOf(
                 ActionParameterKey.MATCH_REGION_LEFT,

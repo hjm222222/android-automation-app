@@ -11,6 +11,7 @@ enum class ActionType(val displayName: String, val category: ActionCategory) {
     CLICK_IMAGE("点击图像", ActionCategory.VISION),
     WAIT_IMAGE("等待图像", ActionCategory.VISION),
     OCR_TEXT("OCR文字", ActionCategory.VISION),
+    CLICK_OCR_TEXT("点击屏幕文字", ActionCategory.VISION),
     FIND_COLOR("找色", ActionCategory.VISION),
     PICK_COLOR("取色", ActionCategory.VISION),
     CREATE_VARIABLE("创建变量", ActionCategory.DATA),

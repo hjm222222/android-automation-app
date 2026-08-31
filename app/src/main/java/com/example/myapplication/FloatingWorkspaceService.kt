@@ -64,9 +64,12 @@ import com.example.myapplication.script.platform.SwipeCoordinatePickerOverlay
 import com.example.myapplication.script.platform.ColorPickerOverlay
 import com.example.myapplication.script.platform.ScreenCaptureSession
 import com.example.myapplication.script.platform.ScreenCaptureVisionController
+import com.example.myapplication.script.platform.VisionResult
 import com.example.myapplication.script.repository.ScriptRepository
 import com.example.myapplication.script.platform.ImageTemplatePickerOverlay
 import com.example.myapplication.script.platform.ImageTemplateRepository
+import com.example.myapplication.script.platform.OcrTextPickerOverlay
+import com.example.myapplication.script.action.OcrClickActionMapper
 import com.example.myapplication.script.platform.AccessibilityController
 import com.example.myapplication.script.platform.AndroidApplicationController
 import com.example.myapplication.script.platform.AccessibilityNodePickerOverlay
@@ -91,6 +94,8 @@ class FloatingWorkspaceService : Service() {
     private var pageLayoutParams: WindowManager.LayoutParams? = null
     private var pageFollowsWorkspace = false
     private var workspaceHiddenForVisualCapture = false
+    private var pageHiddenForVisualCapture = false
+    private var ocrTextPicker: OcrTextPickerOverlay? = null
     // 悬浮窗只负责交互和页面展示，脚本数据由独立控制器统一管理。
     // 未来的 AI、录制、导入功能也应该通过这个入口提供动作。
     // Service 只在组装依赖时读取平台能力，脚本运行层不反向依赖 Service。
@@ -106,9 +111,11 @@ class FloatingWorkspaceService : Service() {
                 mainHandler.post { runningActionView?.text = "当前动作：${action.displayName}" }
             },
             onActionCompleted = { action, result ->
-                if (result is ActionExecutionResult.Success && action.type == ActionType.CLICK) {
-                    val x = action.parameters[ActionParameterKey.X]?.toIntOrNull()
-                    val y = action.parameters[ActionParameterKey.Y]?.toIntOrNull()
+                if (result is ActionExecutionResult.Success && action.type in setOf(ActionType.CLICK, ActionType.CLICK_OCR_TEXT)) {
+                    val ocrCenter = action.takeIf { it.type == ActionType.CLICK_OCR_TEXT }
+                        ?.let(OcrClickActionMapper::center)
+                    val x = ocrCenter?.x ?: action.parameters[ActionParameterKey.X]?.toIntOrNull()
+                    val y = ocrCenter?.y ?: action.parameters[ActionParameterKey.Y]?.toIntOrNull()
                     if (x != null && y != null) {
                         mainHandler.post {
                             runningActionView?.text = "点击已发送：($x, $y)"
@@ -198,7 +205,7 @@ class FloatingWorkspaceService : Service() {
             ActionType.SWIPE,
             ActionType.CLICK_IMAGE,
             ActionType.WAIT_IMAGE,
-            ActionType.OCR_TEXT,
+            ActionType.CLICK_OCR_TEXT,
             ActionType.FIND_COLOR,
             ActionType.PICK_COLOR
         )
@@ -321,6 +328,12 @@ class FloatingWorkspaceService : Service() {
         } catch (_: RuntimeException) {
         } finally {
             swipeCoordinatePicker = null
+        }
+        try {
+            ocrTextPicker?.dismiss()
+        } catch (_: RuntimeException) {
+        } finally {
+            ocrTextPicker = null
         }
     }
 
@@ -483,7 +496,10 @@ class FloatingWorkspaceService : Service() {
             contentDescription = "退出脚本运行"
             isClickable = true
             isFocusable = true
-            setOnClickListener { stopSelf() }
+            setOnClickListener {
+                runningJob?.cancel()
+                hideRunningWorkspace()
+            }
         }
         val controls = LinearLayout(this).apply {
             gravity = Gravity.END
@@ -697,7 +713,9 @@ class FloatingWorkspaceService : Service() {
         }, LinearLayout.LayoutParams(-1, 0, 1f))
         ActionRegistry.categories().map { category ->
             category.displayName to ActionRegistry.actionsIn(category)
-        }.forEach { (title, types) ->
+                .filterNot { it == ActionType.OCR_TEXT }
+        }.filter { (_, types) -> types.isNotEmpty() }
+            .forEach { (title, types) ->
             scrollContent.addView(TextView(this).apply {
                 text = title
                 textSize = 12f
@@ -718,10 +736,8 @@ class FloatingWorkspaceService : Service() {
                         isFocusable = true
                         setOnClickListener {
                             logButtonClick("动作:${actionType.displayName}")
-                            if (actionType in VISUAL_ACTION_TYPES) {
-                                android.util.Log.d(TAG, "event=visual_action_button_click actionType=$actionType")
-                            }
-                            addAction(actionType)
+                            dismissPage()
+                            mainHandler.post { addAction(actionType) }
                         }
                     }
                     row.addView(button, LinearLayout.LayoutParams(0, dp(28), 1f).apply {
@@ -795,7 +811,11 @@ class FloatingWorkspaceService : Service() {
                         ActionParameterKey.DURATION_MILLIS to durationMillis.toString()
                     )
                 )) {
-                    is com.example.myapplication.script.api.ActionApiResult.Success -> dismissPage()
+                    is com.example.myapplication.script.api.ActionApiResult.Success -> {
+                        restoreVisualWorkspace()
+                        dismissPage()
+                        Toast.makeText(this, "动作已添加", Toast.LENGTH_SHORT).show()
+                    }
                     is com.example.myapplication.script.api.ActionApiResult.Failure -> {
                         Toast.makeText(this, apiResult.message, Toast.LENGTH_SHORT).show()
                     }
@@ -847,64 +867,139 @@ class FloatingWorkspaceService : Service() {
         showActionEditor(ActionType.FIND_COLOR)
     }
 
+    private fun showCaptureFailure(result: VisionResult<*>?) {
+        val message = when (result) {
+            VisionResult.PermissionDenied, null -> "屏幕录制权限不可用，请重新授权"
+            VisionResult.Timeout -> "截图超时，请重试"
+            is VisionResult.Failed -> "截图失败：${result.message}"
+            VisionResult.NotFound -> "无法获取当前屏幕快照"
+            is VisionResult.Success -> return
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun prepareVisualCapture() {
+        if (!::workspaceView.isInitialized) return
+
+        workspaceHiddenForVisualCapture = true
+        if (workspaceView.isAttachedToWindow) {
+            runCatching { windowManager.removeViewImmediate(workspaceView) }
+        }
+
+        pageHiddenForVisualCapture = pageView != null
+        pageView?.let { view ->
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.removeViewImmediate(view) }
+            }
+        }
+
+        runningView?.let { view ->
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.removeViewImmediate(view) }
+            }
+        }
+        runningView = null
+        runningStatusView = null
+        runningActionView = null
+    }
+
+    private fun restoreVisualWorkspace() {
+        if (isDestroyed || !::workspaceView.isInitialized) return
+
+        if (workspaceHiddenForVisualCapture && !workspaceView.isAttachedToWindow) {
+            runCatching {
+                windowManager.addView(workspaceView, workspaceLayoutParams)
+            }
+        }
+        workspaceView.visibility = View.VISIBLE
+        workspaceHiddenForVisualCapture = false
+
+        val page = pageView
+        val pageParams = pageLayoutParams
+        if (pageHiddenForVisualCapture && page != null && pageParams != null && !page.isAttachedToWindow) {
+            runCatching { windowManager.addView(page, pageParams) }
+        }
+        page?.visibility = View.VISIBLE
+        pageHiddenForVisualCapture = false
+    }
+
     private fun showOcrTextEditor() {
-        dismissPage()
-        val resultCode = screenCaptureResultCode
-        val data = screenCaptureData?.let(::Intent)
-        if (resultCode != android.app.Activity.RESULT_OK || data == null) {
+        prepareVisualCapture()
+        if (screenCaptureResultCode != android.app.Activity.RESULT_OK || screenCaptureData == null) {
+            restoreVisualWorkspace()
             Toast.makeText(this, "请先返回主页授权屏幕录制", Toast.LENGTH_SHORT).show()
             return
         }
         scriptScope.launch {
-            // #region debug-point C:before-capture
-            reportCaptureDebugEvent("C", "[DEBUG] template screenshot capture started")
-            // #endregion
-            val bitmap = screenCaptureSession?.captureBitmap()
-            // #region debug-point C:after-capture
-            reportCaptureDebugEvent(
-                "C",
-                "[DEBUG] template screenshot capture finished bitmap=${bitmap?.width}x${bitmap?.height}"
-            )
-            // #endregion
+            val vision = visionControllerOrNull()
+            val bitmapResult = try {
+                vision?.captureBitmapResult()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                android.util.Log.e(TAG, "event=ocr_capture_failed message=${error.message}", error)
+                VisionResult.Failed("OCR 截图失败", error)
+            }
+            val bitmap = (bitmapResult as? VisionResult.Success)?.value
             if (isDestroyed) {
                 bitmap?.takeIf { !it.isRecycled }?.recycle()
                 return@launch
             }
-            if (bitmap == null) {
-                android.util.Log.w(TAG, "OCR screenshot capture failed: sessionValid=${screenCaptureSession?.isValid}")
-                Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
+            if (bitmap == null || vision == null) {
+                restoreVisualWorkspace()
+                showCaptureFailure(bitmapResult)
                 return@launch
             }
-            val picker = ImageTemplatePickerOverlay(
+            val textResult = try {
+                vision.recognizeTextBlocksResult(bitmap)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                android.util.Log.e(TAG, "event=ocr_recognition_failed message=${error.message}", error)
+                VisionResult.Failed("OCR 识别失败", error)
+            }
+            if (textResult !is VisionResult.Success) {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                restoreVisualWorkspace()
+                showCaptureFailure(textResult)
+                return@launch
+            }
+            val picker = OcrTextPickerOverlay(
                 context = this@FloatingWorkspaceService,
                 windowManager = windowManager,
                 screenshot = bitmap,
-                onConfirmed = { selection ->
-                    android.util.Log.d(TAG, "event=ocr_region_selected left=${selection.left} top=${selection.top} right=${selection.right} bottom=${selection.bottom}")
-                    imageTemplatePicker = null
-                    if (!bitmap.isRecycled) bitmap.recycle()
-                    if (isDestroyed) return@ImageTemplatePickerOverlay
-                    showActionEditor(
-                        ActionType.OCR_TEXT,
-                        mapOf(
-                            ActionParameterKey.MATCH_REGION_LEFT to selection.left.toString(),
-                            ActionParameterKey.MATCH_REGION_TOP to selection.top.toString(),
-                            ActionParameterKey.MATCH_REGION_RIGHT to selection.right.toString(),
-                            ActionParameterKey.MATCH_REGION_BOTTOM to selection.bottom.toString()
-                        )
-                    )
+                result = textResult.value,
+                onConfirmed = { selectedLine ->
+                    ocrTextPicker = null
+                    if (isDestroyed) return@OcrTextPickerOverlay
+                    val fields = OcrClickActionMapper.fields(selectedLine)
+                    when (val result = scriptActionApi.addAction(ActionType.CLICK_OCR_TEXT, fields)) {
+                        is com.example.myapplication.script.api.ActionApiResult.Success -> {
+                            restoreVisualWorkspace()
+                            Toast.makeText(this@FloatingWorkspaceService, "动作已添加", Toast.LENGTH_SHORT).show()
+                        }
+                        is com.example.myapplication.script.api.ActionApiResult.Failure -> {
+                            restoreVisualWorkspace()
+                            Toast.makeText(this@FloatingWorkspaceService, result.message, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 },
                 onCancelled = {
-                    imageTemplatePicker = null
+                    ocrTextPicker = null
+                    restoreVisualWorkspace()
+                },
+                onDismissed = {
+                    ocrTextPicker = null
                     if (!bitmap.isRecycled) bitmap.recycle()
                 }
             )
-            if (picker.show()) {
-                imageTemplatePicker = picker
+            val pickerShown = picker.show()
+            if (pickerShown) {
+                ocrTextPicker = picker
             } else {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                android.util.Log.e(TAG, "Failed to show OCR selection overlay")
-                Toast.makeText(this@FloatingWorkspaceService, "无法显示 OCR 框选窗口", Toast.LENGTH_SHORT).show()
+                restoreVisualWorkspace()
+                Toast.makeText(this@FloatingWorkspaceService, "无法显示文字选择窗口", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -913,7 +1008,7 @@ class FloatingWorkspaceService : Service() {
         // #region debug-point A:image-template-entry
         reportCaptureDebugEvent("A", "[DEBUG] image template editor entered type=$type")
         // #endregion
-        dismissPage()
+        prepareVisualCapture()
         // #region debug-point B:after-page-dismiss
         reportCaptureDebugEvent("B", "[DEBUG] page dismissed before template screenshot")
         // #endregion
@@ -927,7 +1022,8 @@ class FloatingWorkspaceService : Service() {
             // #region debug-point C:before-template-capture
             reportCaptureDebugEvent("C", "[DEBUG] template screenshot capture started")
             // #endregion
-            val bitmap = screenCaptureSession?.captureBitmap()
+            val bitmapResult = visionControllerOrNull()?.captureBitmapResult()
+            val bitmap = (bitmapResult as? VisionResult.Success)?.value
             // #region debug-point C:after-template-capture
             reportCaptureDebugEvent(
                 "C",
@@ -939,8 +1035,7 @@ class FloatingWorkspaceService : Service() {
                 return@launch
             }
             if (bitmap == null) {
-                android.util.Log.w(TAG, "Template screenshot capture failed: sessionValid=${screenCaptureSession?.isValid}")
-                Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
+                showCaptureFailure(bitmapResult)
                 return@launch
             }
             val picker = ImageTemplatePickerOverlay(
@@ -948,18 +1043,24 @@ class FloatingWorkspaceService : Service() {
                 onConfirmed = { selection ->
                     imageTemplatePicker = null
                     if (isDestroyed) {
-                        if (!bitmap.isRecycled) bitmap.recycle()
                         return@ImageTemplatePickerOverlay
                     }
                     val id = ImageTemplateRepository(applicationContext).save(bitmap, selection)
-                    if (!bitmap.isRecycled) bitmap.recycle()
                     if (id == null) {
                         Toast.makeText(this@FloatingWorkspaceService, "模板保存失败或框选区域过小", Toast.LENGTH_SHORT).show()
                     } else {
+                        Toast.makeText(this@FloatingWorkspaceService, "模板已保存", Toast.LENGTH_SHORT).show()
                         showActionEditor(type, mapOf(ActionParameterKey.TEMPLATE_ID to id))
                     }
                 },
-                onCancelled = { imageTemplatePicker = null; if (!bitmap.isRecycled) bitmap.recycle() }
+                onCancelled = {
+                    imageTemplatePicker = null
+                    restoreVisualWorkspace()
+                },
+                onDismissed = {
+                    imageTemplatePicker = null
+                    if (!bitmap.isRecycled) bitmap.recycle()
+                }
             )
             // #region debug-point D:template-picker
             reportCaptureDebugEvent("D", "[DEBUG] template selection overlay requested")
@@ -973,6 +1074,7 @@ class FloatingWorkspaceService : Service() {
                 // #region debug-point D:template-picker-failed
                 reportCaptureDebugEvent("D", "[DEBUG] template selection overlay failed to show")
                 // #endregion
+                restoreVisualWorkspace()
                 if (!bitmap.isRecycled) bitmap.recycle()
                 android.util.Log.e(TAG, "Failed to show template selection overlay")
                 Toast.makeText(this@FloatingWorkspaceService, "无法显示模板框选窗口", Toast.LENGTH_SHORT).show()
@@ -981,18 +1083,20 @@ class FloatingWorkspaceService : Service() {
     }
 
     private fun showColorPicker() {
-        dismissPage()
+        prepareVisualCapture()
         val resultCode = screenCaptureResultCode
         val data = screenCaptureData?.let { Intent(it) }
         if (resultCode == null || data == null || resultCode != android.app.Activity.RESULT_OK) {
+            restoreVisualWorkspace()
             Toast.makeText(this, "请先返回主页授权屏幕录制", Toast.LENGTH_SHORT).show()
             return
         }
         scriptScope.launch {
-            val bitmap = screenCaptureSession?.captureBitmap()
+            val bitmapResult = visionControllerOrNull()?.captureBitmapResult()
+            val bitmap = (bitmapResult as? VisionResult.Success)?.value
             if (bitmap == null) {
-                android.util.Log.w(TAG, "Color picker screenshot capture failed: sessionValid=${screenCaptureSession?.isValid}")
-                Toast.makeText(this@FloatingWorkspaceService, "无法获取当前屏幕快照，请重新授权", Toast.LENGTH_SHORT).show()
+                restoreVisualWorkspace()
+                showCaptureFailure(bitmapResult)
                 return@launch
             }
             val picker = ColorPickerOverlay(
@@ -1000,6 +1104,7 @@ class FloatingWorkspaceService : Service() {
                 windowManager = windowManager,
                 screenshot = bitmap,
                 onConfirmed = { x, y, hex, red, green, blue ->
+                    restoreVisualWorkspace()
                     android.util.Log.d(TAG, "event=color_picker_result x=$x y=$y hex=$hex")
                     colorPicker = null
                     if (isDestroyed) return@ColorPickerOverlay
@@ -1022,7 +1127,15 @@ class FloatingWorkspaceService : Service() {
                             Toast.makeText(this@FloatingWorkspaceService, result.message, Toast.LENGTH_SHORT).show()
                     }
                 },
-                onCancelled = { colorPicker = null }
+                onCancelled = {
+                    colorPicker = null
+                    restoreVisualWorkspace()
+                    if (!bitmap.isRecycled) bitmap.recycle()
+                },
+                onDismissed = {
+                    colorPicker = null
+                    if (!bitmap.isRecycled) bitmap.recycle()
+                }
             )
             if (picker.show()) {
                 colorPicker = picker
@@ -1128,7 +1241,36 @@ class FloatingWorkspaceService : Service() {
             bottomMargin = dp(8)
         })
         val fields = mutableMapOf<String, EditText>()
+        val generatedOcrVariableName = if (type == ActionType.OCR_TEXT) {
+            var index = 1
+            val usedNames = scriptWorkspace.snapshot()
+                .mapNotNull { it.parameters[ActionParameterKey.OCR_VARIABLE_NAME] }
+                .toSet()
+            while ("ocr_text_$index" in usedNames) index++
+            "ocr_text_$index"
+        } else {
+            null
+        }
+        if (type == ActionType.OCR_TEXT) {
+            val regionSelected = listOf(
+                ActionParameterKey.MATCH_REGION_LEFT,
+                ActionParameterKey.MATCH_REGION_TOP,
+                ActionParameterKey.MATCH_REGION_RIGHT,
+                ActionParameterKey.MATCH_REGION_BOTTOM
+            ).all { initialValues[it]?.toIntOrNull() != null }
+            body.addView(TextView(this).apply {
+                text = if (regionSelected) {
+                    "已选择识别区域\n程序会识别这块区域里的全部文字"
+                } else {
+                    "还没有选择识别区域"
+                }
+                textSize = 15f
+                setTextColor(Color.rgb(72, 62, 47))
+                setPadding(0, dp(8), 0, dp(16))
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
         definition.fields.forEach { fieldDefinition ->
+            if (type == ActionType.OCR_TEXT) return@forEach
             val field = EditText(this).apply {
                 hint = fieldDefinition.hint
                 setSingleLine()
@@ -1152,7 +1294,15 @@ class FloatingWorkspaceService : Service() {
             .setView(body)
             .setNegativeButton("取消", null)
             .setPositiveButton("添加") { _, _ ->
-                val editorValues = initialValues + fields.mapValues { (_, field) -> field.text.toString() }
+                val editorValues = initialValues + fields.mapValues { (_, field) -> field.text.toString() } +
+                    if (type == ActionType.OCR_TEXT) {
+                        mapOf(
+                            ActionParameterKey.OCR_VARIABLE_NAME to generatedOcrVariableName.orEmpty(),
+                            ActionParameterKey.OCR_TARGET_TEXT to ""
+                        )
+                    } else {
+                        emptyMap()
+                    }
                 when (val apiResult = scriptActionApi.addAction(
                     type = type,
                     fields = editorValues,
@@ -1162,7 +1312,11 @@ class FloatingWorkspaceService : Service() {
                         afterActions = afterActions
                     )
                 )) {
-                    is com.example.myapplication.script.api.ActionApiResult.Success -> dismissPage()
+                    is com.example.myapplication.script.api.ActionApiResult.Success -> {
+                        restoreVisualWorkspace()
+                        dismissPage()
+                        Toast.makeText(this, "动作已添加", Toast.LENGTH_SHORT).show()
+                    }
                     is com.example.myapplication.script.api.ActionApiResult.Failure -> {
                         Toast.makeText(this, apiResult.message, Toast.LENGTH_SHORT).show()
                     }

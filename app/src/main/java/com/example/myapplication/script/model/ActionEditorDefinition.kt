@@ -55,4 +55,8 @@ object ActionParameterKey {
     const val MATCH_REGION_BOTTOM = "matchRegionBottom"
     const val OCR_VARIABLE_NAME = "ocrVariableName"
     const val OCR_TARGET_TEXT = "ocrTargetText"
+    const val OCR_TEXT_LEFT = "ocrTextLeft"
+    const val OCR_TEXT_TOP = "ocrTextTop"
+    const val OCR_TEXT_RIGHT = "ocrTextRight"
+    const val OCR_TEXT_BOTTOM = "ocrTextBottom"
 }

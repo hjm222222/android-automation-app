@@ -4,13 +4,11 @@ import android.graphics.Bitmap
 import android.graphics.Point
 import android.graphics.Rect
 import com.google.android.gms.tasks.Task
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
@@ -24,8 +22,19 @@ interface VisionController {
     /** 调用方取得后必须自行回收 Bitmap。默认实现兼容不支持 OCR 的测试替身。 */
     suspend fun captureBitmap(): Bitmap? = null
 
+    suspend fun captureBitmapResult(): VisionResult<Bitmap> =
+        captureBitmap()?.let { VisionResult.Success(it) } ?: VisionResult.PermissionDenied
+
     suspend fun recognizeTextResult(region: Rect? = null): VisionResult<String> =
         VisionResult.PermissionDenied
+
+    suspend fun recognizeTextBlocksResult(region: Rect? = null): VisionResult<OcrTextResult> =
+        VisionResult.PermissionDenied
+
+    suspend fun recognizeTextBlocksResult(
+        bitmap: Bitmap,
+        region: Rect? = null
+    ): VisionResult<OcrTextResult> = VisionResult.PermissionDenied
 
     suspend fun findColorResult(
         color: Int,
@@ -63,7 +72,8 @@ data class ScreenCapture(
 /** 将已有 MediaProjection 授权包装为脚本运行期截图能力。 */
 class ScreenCaptureVisionController(
     private val session: ScreenCaptureSession,
-    context: android.content.Context
+    context: android.content.Context,
+    private val ocrRecognizer: OcrRecognizer = MlKitOcrRecognizer()
 ) : VisionController {
     private val applicationContext = context.applicationContext
     private val templates = ImageTemplateRepository(applicationContext)
@@ -85,14 +95,37 @@ class ScreenCaptureVisionController(
         }
     }
 
-    override suspend fun captureBitmap(): Bitmap? = when (val result = session.captureResult()) {
+    override suspend fun captureBitmapResult(): VisionResult<Bitmap> =
+        session.captureResult()
+
+    override suspend fun captureBitmap(): Bitmap? = when (val result = captureBitmapResult()) {
         is VisionResult.Success -> result.value
         else -> null
     }
 
-    override suspend fun recognizeTextResult(region: Rect?): VisionResult<String> {
+    override suspend fun recognizeTextResult(region: Rect?): VisionResult<String> =
+        captureAndRecognize { bitmap -> ocrRecognizer.recognizeText(bitmap, region) }
+
+    override suspend fun recognizeTextBlocksResult(region: Rect?): VisionResult<OcrTextResult> =
+        captureAndRecognize { bitmap -> ocrRecognizer.recognizeLines(bitmap, region) }
+
+    override suspend fun recognizeTextBlocksResult(
+        bitmap: Bitmap,
+        region: Rect?
+    ): VisionResult<OcrTextResult> = ocrRecognizer.recognizeLines(bitmap, region)
+
+    private suspend fun <T> captureAndRecognize(
+        recognize: suspend (Bitmap) -> VisionResult<T>
+    ): VisionResult<T> {
         return when (val captureResult = session.captureResult()) {
-            is VisionResult.Success -> recognizeText(captureResult.value, region)
+            is VisionResult.Success -> {
+                val bitmap = captureResult.value
+                try {
+                    recognize(bitmap)
+                } finally {
+                    if (!bitmap.isRecycled) bitmap.recycle()
+                }
+            }
             VisionResult.NotFound -> VisionResult.NotFound
             VisionResult.Timeout -> VisionResult.Timeout
             VisionResult.PermissionDenied -> VisionResult.PermissionDenied
@@ -149,41 +182,6 @@ class ScreenCaptureVisionController(
             is VisionResult.Success -> result.value
             else -> null
         }
-}
-
-private suspend fun ScreenCaptureVisionController.recognizeText(
-    bitmap: Bitmap,
-    region: Rect?
-): VisionResult<String> {
-    val cropped = try {
-        val bounds = Rect(0, 0, bitmap.width, bitmap.height)
-        val clipped = region?.let { Rect(it).apply { intersect(bounds) } } ?: bounds
-        if (clipped.width() <= 0 || clipped.height() <= 0) return VisionResult.Failed("OCR 框选区域无效")
-        Bitmap.createBitmap(bitmap, clipped.left, clipped.top, clipped.width(), clipped.height())
-            .copy(Bitmap.Config.ARGB_8888, false)
-    } catch (error: CancellationException) {
-        throw error
-    } catch (error: RuntimeException) {
-        return VisionResult.Failed("OCR 截图裁剪失败", error)
-    } finally {
-        if (!bitmap.isRecycled) bitmap.recycle()
-    }
-
-    return try {
-        val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
-        try {
-            val text = recognizer.process(InputImage.fromBitmap(cropped, 0)).await().text.trim()
-            if (text.isBlank()) VisionResult.NotFound else VisionResult.Success(text)
-        } finally {
-            recognizer.close()
-        }
-    } catch (error: CancellationException) {
-        throw error
-    } catch (error: RuntimeException) {
-        VisionResult.Failed("OCR 识别失败", error)
-    } finally {
-        if (!cropped.isRecycled) cropped.recycle()
-    }
 }
 
 private suspend fun findColor(

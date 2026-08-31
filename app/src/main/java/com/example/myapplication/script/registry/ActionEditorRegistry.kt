@@ -31,6 +31,7 @@ object ActionEditorRegistry {
         ActionType.CLICK_IMAGE to imageActionDefinition("点击图像"),
         ActionType.WAIT_IMAGE to imageActionDefinition("等待图像"),
         ActionType.OCR_TEXT to ocrTextActionDefinition(),
+        ActionType.CLICK_OCR_TEXT to clickOcrTextActionDefinition(),
         ActionType.FIND_COLOR to ActionEditorDefinition(
             fields = listOf(
                 ActionFieldDefinition(ActionParameterKey.COLOR_HEX, "目标颜色 HEX（例如 #FF0000）"),
@@ -153,16 +154,24 @@ object ActionEditorRegistry {
 
     private fun ocrTextActionDefinition() = ActionEditorDefinition(
         fields = listOf(
-            ActionFieldDefinition(ActionParameterKey.OCR_VARIABLE_NAME, "写入变量名"),
-            ActionFieldDefinition(ActionParameterKey.OCR_TARGET_TEXT, "目标文字（可选）"),
-            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_LEFT, "框选区域左边界", ActionInputType.NUMBER),
-            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_TOP, "框选区域上边界", ActionInputType.NUMBER),
-            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_RIGHT, "框选区域右边界", ActionInputType.NUMBER),
-            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_BOTTOM, "框选区域下边界", ActionInputType.NUMBER)
+            ActionFieldDefinition(ActionParameterKey.OCR_VARIABLE_NAME, "OCR 内部变量名"),
+            ActionFieldDefinition(ActionParameterKey.OCR_TARGET_TEXT, "OCR 目标文字"),
+            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_LEFT, "OCR 区域左边界", ActionInputType.NUMBER),
+            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_TOP, "OCR 区域上边界", ActionInputType.NUMBER),
+            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_RIGHT, "OCR 区域右边界", ActionInputType.NUMBER),
+            ActionFieldDefinition(ActionParameterKey.MATCH_REGION_BOTTOM, "OCR 区域下边界", ActionInputType.NUMBER)
         ),
         displayName = { values ->
-            "OCR文字：写入 ${values[ActionParameterKey.OCR_VARIABLE_NAME].orEmpty()}"
+            val target = values[ActionParameterKey.OCR_TARGET_TEXT].orEmpty()
+            if (target.isBlank()) "识别区域文字" else "识别文字：$target"
         }
+    )
+
+    private fun clickOcrTextActionDefinition() = ActionEditorDefinition(
+        fields = listOf(
+            ActionFieldDefinition(ActionParameterKey.OCR_TARGET_TEXT, "目标文字")
+        ),
+        displayName = { values -> "点击文字：${values[ActionParameterKey.OCR_TARGET_TEXT].orEmpty()}" }
     )
 
     private fun variableEditorDefinition(label: String) = ActionEditorDefinition(

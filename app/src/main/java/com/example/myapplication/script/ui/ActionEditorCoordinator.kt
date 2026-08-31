@@ -33,7 +33,8 @@ class ActionEditorCoordinator(
             ActionType.CLICK_NODE -> showNodePicker()
             ActionType.PICK_COLOR -> showColorPicker()
             ActionType.FIND_COLOR -> showFindColorEditor()
-            ActionType.OCR_TEXT -> showOcrTextEditor()
+            ActionType.CLICK_OCR_TEXT -> showOcrTextEditor()
+            ActionType.OCR_TEXT -> showFormEditor(type)
             ActionType.CLICK_IMAGE,
             ActionType.WAIT_IMAGE -> showImageTemplateEditor(type)
             ActionType.INPUT_TEXT,

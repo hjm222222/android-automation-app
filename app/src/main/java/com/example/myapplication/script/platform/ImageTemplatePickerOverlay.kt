@@ -22,7 +22,8 @@ class ImageTemplatePickerOverlay(
     private val windowManager: WindowManager,
     private val screenshot: Bitmap,
     private val onConfirmed: (Rect) -> Unit,
-    private val onCancelled: () -> Unit
+    private val onCancelled: () -> Unit,
+    private val onDismissed: () -> Unit = {}
 ) {
     private val root = FrameLayout(context.applicationContext)
     private val selectionView = SelectionView(context.applicationContext, screenshot)
@@ -56,8 +57,9 @@ class ImageTemplatePickerOverlay(
     }
 
     fun dismiss() {
+        if (!shown) return
         removeWindow()
-        recycleScreenshot()
+        onDismissed()
     }
 
     private fun confirm() {
@@ -67,15 +69,18 @@ class ImageTemplatePickerOverlay(
         try {
             onConfirmed(rect)
         } finally {
-            recycleScreenshot()
+            onDismissed()
         }
     }
 
     private fun cancel() {
         Log.d(TAG, "event=image_selection_overlay_cancel")
         removeWindow()
-        recycleScreenshot()
-        onCancelled()
+        try {
+            onCancelled()
+        } finally {
+            onDismissed()
+        }
     }
 
     private fun removeWindow() {
@@ -88,10 +93,6 @@ class ImageTemplatePickerOverlay(
                 // Window token may already be invalid while the service is stopping.
             }
         }
-    }
-
-    private fun recycleScreenshot() {
-        if (!screenshot.isRecycled) screenshot.recycle()
     }
 
     private companion object {

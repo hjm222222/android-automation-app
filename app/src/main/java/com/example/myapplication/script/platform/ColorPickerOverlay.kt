@@ -21,7 +21,8 @@ class ColorPickerOverlay(
     private val windowManager: WindowManager,
     private val screenshot: Bitmap,
     private val onConfirmed: (x: Int, y: Int, hex: String, red: Int, green: Int, blue: Int) -> Unit,
-    private val onCancelled: () -> Unit
+    private val onCancelled: () -> Unit,
+    private val onDismissed: () -> Unit = {}
 ) {
     private val root = FrameLayout(context).apply { setBackgroundColor(Color.BLACK) }
     private val pickerView = PickerView(context, screenshot)
@@ -91,8 +92,13 @@ class ColorPickerOverlay(
     fun dismiss() {
         if (!shown) return
         shown = false
-        if (root.isAttachedToWindow) windowManager.removeView(root)
-        if (!screenshot.isRecycled) screenshot.recycle()
+        try {
+            if (root.isAttachedToWindow) windowManager.removeView(root)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Failed to remove color picker overlay", error)
+        } finally {
+            onDismissed()
+        }
     }
 
     private fun updateLabel(color: Int) {
@@ -101,10 +107,12 @@ class ColorPickerOverlay(
 
     private fun confirm() {
         val color = pickerView.currentColor
+        val bitmapX = pickerView.bitmapX
+        val bitmapY = pickerView.bitmapY
         val hex = color.toHex()
-        Log.d(TAG, "event=color_picker_confirm x=${pickerView.bitmapX} y=${pickerView.bitmapY} hex=$hex")
+        Log.d(TAG, "event=color_picker_confirm x=$bitmapX y=$bitmapY hex=$hex")
         dismiss()
-        onConfirmed(pickerView.bitmapX, pickerView.bitmapY, hex, Color.red(color), Color.green(color), Color.blue(color))
+        onConfirmed(bitmapX, bitmapY, hex, Color.red(color), Color.green(color), Color.blue(color))
     }
 
     private fun cancel() {

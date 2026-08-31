@@ -2,8 +2,8 @@ package com.example.myapplication.script.action
 
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.Rect
 import android.util.Log
+import android.graphics.Rect
 import com.example.myapplication.script.model.ActionParameterKey
 import com.example.myapplication.script.model.ActionType
 import com.example.myapplication.script.model.ScriptAction
@@ -101,6 +101,29 @@ class WaitImageActionHandler(
     }
 
     private fun region(action: ScriptAction): Rect? = imageRegion(action)
+}
+
+class ClickOcrTextActionHandler : EmptyActionHandler(ActionType.CLICK_OCR_TEXT) {
+    override val isAvailable: Boolean = true
+
+    override suspend fun execute(action: ScriptAction, runtime: ScriptRuntime): ActionExecutionResult {
+        val controller = runtime.accessibilityController
+            ?: return ActionExecutionResult.Failed(
+                "请先启用无障碍服务",
+                ActionExecutionFailureCode.PLATFORM_DISCONNECTED
+            )
+        val center = OcrClickActionMapper.center(action)
+            ?: return ActionExecutionResult.Failed("文字位置无效")
+        runtime.recordVisionMatch(center.x, center.y)
+        return if (controller.press(center.x, center.y, 80L)) {
+            ActionExecutionResult.Success
+        } else {
+            ActionExecutionResult.Failed(
+                "文字点击手势执行失败",
+                ActionExecutionFailureCode.GESTURE_REJECTED
+            )
+        }
+    }
 }
 
 class OcrTextActionHandler(

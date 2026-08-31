@@ -4,6 +4,7 @@ import com.example.myapplication.script.action.AppControlActionHandler
 import com.example.myapplication.script.action.ClickActionHandler
 import com.example.myapplication.script.action.ClickImageActionHandler
 import com.example.myapplication.script.action.ClickNodeActionHandler
+import com.example.myapplication.script.action.ClickOcrTextActionHandler
 import com.example.myapplication.script.action.CreateVariableActionHandler
 import com.example.myapplication.script.action.DoubleClickActionHandler
 import com.example.myapplication.script.action.FindColorActionHandler
@@ -42,6 +43,7 @@ object ActionRegistry {
         ActionType.CLICK_IMAGE to ClickImageActionHandler(),
         ActionType.WAIT_IMAGE to WaitImageActionHandler(),
         ActionType.OCR_TEXT to OcrTextActionHandler(),
+        ActionType.CLICK_OCR_TEXT to ClickOcrTextActionHandler(),
         ActionType.FIND_COLOR to FindColorActionHandler(),
         ActionType.PICK_COLOR to PickColorActionHandler(),
         ActionType.CREATE_VARIABLE to CreateVariableActionHandler(),
